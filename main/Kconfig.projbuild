@@ -1,0 +1,69 @@
+menu "Smart Alarm Clock"
+
+    config SMART_ALARM_DEVICE_ID
+        string "Device identifier"
+        default "esp32-alarm-clock"
+        help
+            Identifier sent to the local dashboard with status uploads.
+
+    config SMART_ALARM_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "YOUR_WIFI_SSID"
+        help
+            Local Wi-Fi network SSID. The device only needs LAN access.
+
+    config SMART_ALARM_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+        help
+            Local Wi-Fi password. Leave empty only for an open local network.
+
+    config SMART_ALARM_SERVER_URL
+        string "Local dashboard/API base URL"
+        default "http://192.168.1.100:8000"
+        help
+            Base URL of the local dashboard server, for example
+            http://192.168.1.23:8000. Do not use an internet/cloud URL.
+
+    config SMART_ALARM_TIMEZONE
+        string "POSIX timezone"
+        default "CET-1CEST,M3.5.0/2,M10.5.0/3"
+        help
+            POSIX timezone used when comparing alarm time to the local clock.
+            The default is suitable for Italy/Central Europe.
+
+    config SMART_ALARM_DEFAULT_ENABLED
+        bool "Enable alarm by default"
+        default n
+
+    config SMART_ALARM_DEFAULT_HOUR
+        int "Default alarm hour"
+        range 0 23
+        default 7
+
+    config SMART_ALARM_DEFAULT_MINUTE
+        int "Default alarm minute"
+        range 0 59
+        default 0
+
+    config SMART_ALARM_DEFAULT_SNOOZE_MINUTES
+        int "Default snooze duration in minutes"
+        range 1 120
+        default 5
+
+    config SMART_ALARM_SETTINGS_POLL_PERIOD_MS
+        int "Alarm settings poll period in milliseconds"
+        range 1000 3600000
+        default 10000
+
+    config SMART_ALARM_STATUS_UPLOAD_PERIOD_MS
+        int "Device status upload period in milliseconds"
+        range 1000 3600000
+        default 10000
+
+    config SMART_ALARM_HTTP_TIMEOUT_MS
+        int "HTTP timeout in milliseconds"
+        range 500 60000
+        default 5000
+
+endmenu

@@ -1,2 +1,21 @@
-idf_component_register(SRCS "user_button.c" "audio_player.c" "i2c_sensors.c" "main.c"
-                    INCLUDE_DIRS ".")
+idf_component_register(
+    SRCS
+        "alarm_manager.c"
+        "audio_player.c"
+        "i2c_sensors.c"
+        "main.c"
+        "network_client.c"
+        "user_button.c"
+        "wifi_manager.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        driver
+        esp_event
+        esp_driver_gpio
+        esp_driver_uart
+        esp_http_client
+        esp_netif
+        esp_timer
+        esp_wifi
+        nvs_flash
+)

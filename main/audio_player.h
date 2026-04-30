@@ -1,4 +1,8 @@
 #pragma once
 
+#include <stdint.h>
+
 void init_audio_player(void);
-// We will add the actual play functions here later
+void audio_player_set_volume(uint8_t volume);
+void audio_player_play_alarm(void);
+void audio_player_stop(void);

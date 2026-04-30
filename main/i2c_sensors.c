@@ -1,7 +1,10 @@
 #include <stdio.h>
+#include <stdint.h>
+#include "esp_err.h"
 #include "esp_log.h"
 #include "driver/i2c.h"
 #include "i2c_sensors.h"
+#include "alarm_manager.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -30,13 +33,25 @@ void sensor_task(void *pvParameters) {
     while(1) {
         // 1. Trigger Measurement
         uint8_t trigger_cmd[] = {0xAC, 0x33, 0x00};
-        i2c_master_write_to_device(I2C_MASTER_NUM, AHT20_ADDR, trigger_cmd, 3, pdMS_TO_TICKS(100));
+        esp_err_t err = i2c_master_write_to_device(I2C_MASTER_NUM, AHT20_ADDR, trigger_cmd, 3, pdMS_TO_TICKS(100));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "AHT20 trigger failed: %s", esp_err_to_name(err));
+            alarm_manager_set_error("AHT20 trigger failed");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
         
         // 2. Wait for measurement to complete (AHT20 needs ~80ms)
         vTaskDelay(pdMS_TO_TICKS(100));
 
         // 3. Read 6 bytes of data
-        i2c_master_read_from_device(I2C_MASTER_NUM, AHT20_ADDR, data, 6, pdMS_TO_TICKS(100));
+        err = i2c_master_read_from_device(I2C_MASTER_NUM, AHT20_ADDR, data, 6, pdMS_TO_TICKS(100));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "AHT20 read failed: %s", esp_err_to_name(err));
+            alarm_manager_set_error("AHT20 read failed");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
 
         // 4. Convert raw data to Temperature and Humidity
         // These formulas come from the AHT20 Datasheet
@@ -47,6 +62,7 @@ void sensor_task(void *pvParameters) {
         float temperature = (float)temp_raw * 200 / 1048576 - 50;
 
         ESP_LOGI(TAG, "Temp: %.2f°C | Humidity: %.2f%%", temperature, humidity);
+        alarm_manager_update_environment(temperature, humidity);
 
         vTaskDelay(pdMS_TO_TICKS(2000)); // Read every 2 seconds
     }

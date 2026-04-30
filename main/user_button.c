@@ -2,6 +2,7 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "alarm_manager.h"
 #include "user_button.h"
 
 static const char *TAG = "BUTTON";
@@ -20,13 +21,18 @@ void init_user_button(void) {
 }
 
 void button_task(void *pvParameters) {
+    int last_level = 1;
+
     while(1) {
-        // Because of the pull-up, the pin reads 0 when pressed
-        if (gpio_get_level(BUTTON_PIN) == 1) {
+        int level = gpio_get_level(BUTTON_PIN);
+
+        // Because of the pull-up, the pin reads 0 when pressed.
+        if (last_level == 1 && level == 0) {
             ESP_LOGI(TAG, "Button Pressed!");
-            // Add a small delay to avoid "bouncing" (multiple triggers for one press)
+            alarm_manager_snooze();
             vTaskDelay(pdMS_TO_TICKS(300)); 
         }
+        last_level = level;
         vTaskDelay(pdMS_TO_TICKS(50)); // Check every 50ms
     }
 }

@@ -4,16 +4,16 @@
     "interface/ftdi/esp32_devkitj_v1.cfg",
     "target/esp32.cfg"
   ],
-  "idf.currentSetup": "C:\\esp\\v6.0\\esp-idf",
+  "idf.espIdfPath": "/Users/daniellancorai/esp/v6.0.1/esp-idf",
+  "idf.toolsPath": "/Users/daniellancorai/.espressif",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32"
   },
-  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-20.1.1_20250829\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=c:\\Users\\Filippo\\Embedded_software_2026\\build"
+    "--compile-commands-dir=${workspaceFolder}/build"
   ],
-  "idf.portWin": "COM3",
+  "idf.port": "/dev/cu.usbserial-210",
   "idf.flashType": "UART"
 }
