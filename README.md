@@ -20,19 +20,18 @@ Open this on the same computer:
 http://localhost:8000
 ```
 
-The page is both the alarm dashboard and a small local test app.
+The page is the monitoring dashboard, alarm editor, and sleep schedule planner.
 
-### 2. Test without the ESP32
+### 2. Configure alarms in the dashboard
 
-Use the browser page first:
+Use the browser page to prepare the device settings:
 
-1. In `Alarm Settings`, choose an alarm time, enable or disable the alarm, set snooze minutes, and press `Save Settings`.
-2. In `Local Test Device`, press `Fetch Settings as Device`. This shows the JSON the ESP32 firmware will fetch from `GET /api/alarm-settings`.
-3. Set a fake temperature/humidity and press `Send Simulated Status`.
-4. Check `Device Status` and `Latest Raw Status`. They should update immediately.
-5. Enable `Ringing` in `Local Test Device` and send again to test the dashboard's ringing state.
+1. In `Alarms`, add one or more alarms, set their times, snooze durations, enabled state, and active days.
+2. In `Sleep Schedule`, tune the age group, fall-asleep delay, cycle length, and preferred number of sleep cycles.
+3. Use a recommended sleep-cycle time to add an alarm, then press `Save`.
+4. Keep the page open while the ESP32 is running so it can show live status from the board.
 
-This confirms the local server, dashboard, settings endpoint, and status endpoint all work before flashing hardware.
+The ESP32 fetches the saved settings from `GET /api/alarm-settings` and uploads live monitoring data to `POST /api/status`.
 
 ### 3. Find your computer LAN IP
 
@@ -204,6 +203,26 @@ Returns alarm settings for the device:
   "enabled": true,
   "alarm_time": "07:30",
   "snooze_minutes": 5,
+  "alarms": [
+    {
+      "id": "alarm-1",
+      "label": "Morning",
+      "enabled": true,
+      "alarm_time": "07:30",
+      "snooze_minutes": 5,
+      "days_mask": 127
+    }
+  ],
+  "sleep_profile": {
+    "age_group": "adult_18_60",
+    "time_to_fall_asleep": 15,
+    "cycle_minutes": 90,
+    "preferred_cycles": 5,
+    "schedule_mode": "wake_at",
+    "wake_time": "07:00",
+    "bed_time": "23:00",
+    "everyday": true
+  },
   "server_epoch": 1714470000,
   "server_iso": "2026-04-30 09:00:00 CEST"
 }
@@ -216,7 +235,7 @@ Saves alarm settings from the dashboard or curl:
 ```sh
 curl -X POST http://localhost:8000/api/alarm-settings \
   -H 'Content-Type: application/json' \
-  -d '{"enabled":true,"alarm_time":"07:30","snooze_minutes":5}'
+  -d '{"alarms":[{"id":"alarm-1","label":"Morning","enabled":true,"alarm_time":"07:30","snooze_minutes":5,"days_mask":127}]}'
 ```
 
 `GET /api/status`
@@ -225,22 +244,17 @@ Returns the latest uploaded ESP32 status.
 
 `POST /api/status`
 
-Used by the ESP32 to upload status. You can simulate it locally:
-
-```sh
-curl -X POST http://localhost:8000/api/status \
-  -H 'Content-Type: application/json' \
-  -d '{"device_id":"test-device","wifi_connected":true,"alarm_enabled":true,"alarm_time":"07:30","snooze_minutes":5,"ringing":false,"time_valid":true,"environment_valid":true,"temperature_c":22.5,"humidity_percent":48.0}'
-```
+Used by the ESP32 to upload live status, including temperature, humidity, ENS160 air quality data, alarm activity, and connectivity.
 
 ## Hardware behavior
 
 - DFPlayer Mini is controlled on UART1 with TX GPIO 17 and RX GPIO 16.
 - The alarm plays track `1` when ringing.
-- The button on GPIO 4 snoozes the alarm when it is ringing.
+- The button on GPIO 4 snoozes ringing alarms on a short click and stops active/snoozed alarms after a 2 second hold.
 - The AHT20 sensor is read on I2C SDA GPIO 21 and SCL GPIO 22.
+- The optional ENS160 air quality sensor is read on the same I2C bus at address `0x52` or `0x53`.
 
-## Offline testing checklist
+## Local integration checklist
 
 1. Start `server/local_dashboard.py`.
 2. Save alarm settings in the dashboard.
@@ -248,4 +262,4 @@ curl -X POST http://localhost:8000/api/status \
 4. Configure ESP32 server URL with your computer's LAN IP.
 5. Flash and monitor the ESP32.
 6. Confirm logs show Wi-Fi connected, settings polling, clock synchronization, and status uploads.
-7. Confirm the dashboard shows the ESP32 device id, status, temperature/humidity, and alarm state.
+7. Confirm the dashboard shows the ESP32 device id, status, temperature/humidity, air quality, and alarm state.

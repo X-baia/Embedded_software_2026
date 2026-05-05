@@ -1,6 +1,7 @@
 #include "network_client.h"
 
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,8 +19,9 @@
 
 static const char *TAG = "NET_CLIENT";
 
-#define HTTP_RESPONSE_BUFFER_SIZE 2048
+#define HTTP_RESPONSE_BUFFER_SIZE 4096
 #define HTTP_URL_BUFFER_SIZE 256
+#define STATUS_JSON_BUFFER_SIZE 4096
 
 typedef struct {
     char data[HTTP_RESPONSE_BUFFER_SIZE];
@@ -162,6 +164,79 @@ static bool json_get_string(const char *json, const char *key, char *out_value, 
     return true;
 }
 
+static const char *json_find_matching(const char *start, char open_char, char close_char)
+{
+    bool in_string = false;
+    bool escaped = false;
+    int depth = 0;
+
+    for (const char *position = start; *position != '\0'; position++) {
+        char ch = *position;
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if (ch == '"') {
+            in_string = true;
+        } else if (ch == open_char) {
+            depth++;
+        } else if (ch == close_char) {
+            depth--;
+            if (depth == 0) {
+                return position;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static bool json_copy_object(const char *start, const char *end, char *out_value, size_t out_size)
+{
+    if (start == NULL || end == NULL || out_value == NULL || end < start) {
+        return false;
+    }
+
+    size_t length = (size_t)(end - start + 1);
+    if (length >= out_size) {
+        return false;
+    }
+
+    memcpy(out_value, start, length);
+    out_value[length] = '\0';
+    return true;
+}
+
+static void append_jsonf(char *buffer, size_t buffer_size, size_t *offset, const char *format, ...)
+{
+    if (*offset >= buffer_size) {
+        return;
+    }
+
+    va_list args;
+    va_start(args, format);
+    int written = vsnprintf(buffer + *offset, buffer_size - *offset, format, args);
+    va_end(args);
+
+    if (written < 0) {
+        return;
+    }
+
+    size_t available = buffer_size - *offset;
+    if ((size_t)written >= available) {
+        *offset = buffer_size;
+    } else {
+        *offset += (size_t)written;
+    }
+}
+
 static void json_escape(const char *input, char *output, size_t output_size)
 {
     if (output_size == 0) {
@@ -208,6 +283,120 @@ static bool parse_alarm_time(const char *alarm_time, int *hour, int *minute)
     return true;
 }
 
+static alarm_entry_t default_alarm_entry(int index)
+{
+    alarm_entry_t alarm = {0};
+    alarm.enabled = false;
+    alarm.hour = APP_DEFAULT_ALARM_HOUR;
+    alarm.minute = APP_DEFAULT_ALARM_MINUTE;
+    alarm.snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
+    alarm.days_mask = ALARM_DAYS_EVERYDAY;
+    alarm.last_fired_day_key = -1;
+    snprintf(alarm.label, sizeof(alarm.label), "Alarm %d", index + 1);
+    return alarm;
+}
+
+static bool parse_alarm_object(const char *object_json, alarm_entry_t *alarm, int index)
+{
+    if (object_json == NULL || alarm == NULL) {
+        return false;
+    }
+
+    alarm_entry_t parsed = default_alarm_entry(index);
+
+    bool enabled = parsed.enabled;
+    if (json_get_bool(object_json, "enabled", &enabled)) {
+        parsed.enabled = enabled;
+    }
+
+    char alarm_time[8];
+    if (json_get_string(object_json, "alarm_time", alarm_time, sizeof(alarm_time))) {
+        parse_alarm_time(alarm_time, &parsed.hour, &parsed.minute);
+    }
+
+    int snooze_minutes = parsed.snooze_minutes;
+    if (json_get_int(object_json, "snooze_minutes", &snooze_minutes) &&
+        snooze_minutes >= 1 && snooze_minutes <= 120) {
+        parsed.snooze_minutes = snooze_minutes;
+    }
+
+    int days_mask = parsed.days_mask;
+    if (json_get_int(object_json, "days_mask", &days_mask) &&
+        days_mask >= 1 && days_mask <= ALARM_DAYS_EVERYDAY) {
+        parsed.days_mask = (uint8_t)days_mask;
+    }
+
+    json_get_string(object_json, "label", parsed.label, sizeof(parsed.label));
+    if (parsed.label[0] == '\0') {
+        snprintf(parsed.label, sizeof(parsed.label), "Alarm %d", index + 1);
+    }
+
+    *alarm = parsed;
+    return true;
+}
+
+static bool parse_alarms_array(const char *json, alarm_settings_t *settings)
+{
+    const char *array = find_json_value(json, "alarms");
+    if (array == NULL || *array != '[' || settings == NULL) {
+        return false;
+    }
+
+    const char *array_end = json_find_matching(array, '[', ']');
+    if (array_end == NULL) {
+        return false;
+    }
+
+    alarm_settings_t parsed = {0};
+    const char *position = array + 1;
+    while (position < array_end && parsed.count < ALARM_MAX_COUNT) {
+        const char *object_start = strchr(position, '{');
+        if (object_start == NULL || object_start >= array_end) {
+            break;
+        }
+
+        const char *object_end = json_find_matching(object_start, '{', '}');
+        if (object_end == NULL || object_end > array_end) {
+            break;
+        }
+
+        char object_json[768];
+        if (json_copy_object(object_start, object_end, object_json, sizeof(object_json)) &&
+            parse_alarm_object(object_json, &parsed.alarms[parsed.count], parsed.count)) {
+            parsed.count++;
+        }
+
+        position = object_end + 1;
+    }
+
+    *settings = parsed;
+    return true;
+}
+
+static void parse_legacy_alarm_settings(const char *json, alarm_settings_t *settings)
+{
+    alarm_entry_t alarm = settings->count > 0 ? settings->alarms[0] : default_alarm_entry(0);
+
+    bool enabled = alarm.enabled;
+    if (json_get_bool(json, "enabled", &enabled)) {
+        alarm.enabled = enabled;
+    }
+
+    char alarm_time[8];
+    if (json_get_string(json, "alarm_time", alarm_time, sizeof(alarm_time))) {
+        parse_alarm_time(alarm_time, &alarm.hour, &alarm.minute);
+    }
+
+    int snooze_minutes = alarm.snooze_minutes;
+    if (json_get_int(json, "snooze_minutes", &snooze_minutes) &&
+        snooze_minutes >= 1 && snooze_minutes <= 120) {
+        alarm.snooze_minutes = snooze_minutes;
+    }
+
+    settings->count = 1;
+    settings->alarms[0] = alarm;
+}
+
 static esp_err_t fetch_alarm_settings(void)
 {
     char url[HTTP_URL_BUFFER_SIZE];
@@ -252,26 +441,8 @@ static esp_err_t fetch_alarm_settings(void)
     alarm_settings_t settings;
     alarm_manager_get_settings(&settings);
 
-    bool enabled = false;
-    if (json_get_bool(response.data, "enabled", &enabled)) {
-        settings.enabled = enabled;
-    }
-
-    char alarm_time[8];
-    if (json_get_string(response.data, "alarm_time", alarm_time, sizeof(alarm_time))) {
-        int hour = settings.hour;
-        int minute = settings.minute;
-        if (parse_alarm_time(alarm_time, &hour, &minute)) {
-            settings.hour = hour;
-            settings.minute = minute;
-        }
-    }
-
-    int snooze_minutes = settings.snooze_minutes;
-    if (json_get_int(response.data, "snooze_minutes", &snooze_minutes)) {
-        if (snooze_minutes >= 1 && snooze_minutes <= 120) {
-            settings.snooze_minutes = snooze_minutes;
-        }
+    if (!parse_alarms_array(response.data, &settings)) {
+        parse_legacy_alarm_settings(response.data, &settings);
     }
 
     time_t server_epoch = 0;
@@ -290,7 +461,7 @@ static char *build_status_json(void)
     char alarm_time[8];
     snprintf(alarm_time, sizeof(alarm_time), "%02d:%02d", status.alarm_hour, status.alarm_minute);
 
-    char *json = malloc(1536);
+    char *json = malloc(STATUS_JSON_BUFFER_SIZE);
     if (json == NULL) {
         return NULL;
     }
@@ -301,47 +472,91 @@ static char *build_status_json(void)
     json_escape(status.last_error, escaped_last_error, sizeof(escaped_last_error));
 
     time_t now = time(NULL);
-    snprintf(json, 1536,
-             "{"
-             "\"device_id\":\"%s\","
-             "\"wifi_connected\":%s,"
-             "\"alarm_enabled\":%s,"
-             "\"alarm_time\":\"%s\","
-             "\"alarm_hour\":%d,"
-             "\"alarm_minute\":%d,"
-             "\"snooze_minutes\":%d,"
-             "\"ringing\":%s,"
-             "\"snoozed_until_epoch\":%lld,"
-             "\"last_alarm_epoch\":%lld,"
-             "\"last_settings_sync_epoch\":%lld,"
-             "\"last_status_upload_epoch\":%lld,"
-             "\"uptime_ms\":%lld,"
-             "\"time_valid\":%s,"
-             "\"environment_valid\":%s,"
-             "\"temperature_c\":%.2f,"
-             "\"humidity_percent\":%.2f,"
-             "\"last_error\":\"%s\","
-             "\"device_epoch\":%lld"
-             "}",
-             escaped_device_id,
-             wifi_manager_is_connected() ? "true" : "false",
-             status.alarm_enabled ? "true" : "false",
-             alarm_time,
-             status.alarm_hour,
-             status.alarm_minute,
-             status.snooze_minutes,
-             status.ringing ? "true" : "false",
-             (long long)status.snoozed_until_epoch,
-             (long long)status.last_alarm_epoch,
-             (long long)status.last_settings_sync_epoch,
-             (long long)status.last_status_upload_epoch,
-             (long long)status.uptime_ms,
-             status.time_valid ? "true" : "false",
-             status.environment_valid ? "true" : "false",
-             status.environment_valid ? status.temperature_c : 0.0f,
-             status.environment_valid ? status.humidity_percent : 0.0f,
-             escaped_last_error,
-             (long long)now);
+
+    size_t offset = 0;
+    append_jsonf(json, STATUS_JSON_BUFFER_SIZE, &offset,
+                 "{"
+                 "\"device_id\":\"%s\","
+                 "\"wifi_connected\":%s,"
+                 "\"alarm_enabled\":%s,"
+                 "\"alarm_time\":\"%s\","
+                 "\"alarm_hour\":%d,"
+                 "\"alarm_minute\":%d,"
+                 "\"snooze_minutes\":%d,"
+                 "\"ringing\":%s,"
+                 "\"alarm_count\":%d,"
+                 "\"active_alarm_count\":%d,"
+                 "\"snoozed_until_epoch\":%lld,"
+                 "\"last_alarm_epoch\":%lld,"
+                 "\"last_settings_sync_epoch\":%lld,"
+                 "\"last_status_upload_epoch\":%lld,"
+                 "\"uptime_ms\":%lld,"
+                 "\"time_valid\":%s,"
+                 "\"environment_valid\":%s,"
+                 "\"temperature_c\":%.2f,"
+                 "\"humidity_percent\":%.2f,"
+                 "\"air_quality_valid\":%s,"
+                 "\"air_quality_index\":%d,"
+                 "\"eco2_ppm\":%d,"
+                 "\"tvoc_ppb\":%d,"
+                 "\"last_error\":\"%s\","
+                 "\"device_epoch\":%lld,"
+                 "\"alarms\":[",
+                 escaped_device_id,
+                 wifi_manager_is_connected() ? "true" : "false",
+                 status.alarm_enabled ? "true" : "false",
+                 alarm_time,
+                 status.alarm_hour,
+                 status.alarm_minute,
+                 status.snooze_minutes,
+                 status.ringing ? "true" : "false",
+                 status.alarm_count,
+                 status.active_alarm_count,
+                 (long long)status.snoozed_until_epoch,
+                 (long long)status.last_alarm_epoch,
+                 (long long)status.last_settings_sync_epoch,
+                 (long long)status.last_status_upload_epoch,
+                 (long long)status.uptime_ms,
+                 status.time_valid ? "true" : "false",
+                 status.environment_valid ? "true" : "false",
+                 status.environment_valid ? status.temperature_c : 0.0f,
+                 status.environment_valid ? status.humidity_percent : 0.0f,
+                 status.air_quality_valid ? "true" : "false",
+                 status.air_quality_valid ? status.air_quality_index : 0,
+                 status.air_quality_valid ? status.eco2_ppm : 0,
+                 status.air_quality_valid ? status.tvoc_ppb : 0,
+                 escaped_last_error,
+                 (long long)now);
+
+    for (int i = 0; i < status.alarm_count && i < ALARM_MAX_COUNT; i++) {
+        const alarm_entry_t *alarm = &status.alarms[i];
+        char escaped_label[ALARM_LABEL_SIZE * 2];
+        char item_time[8];
+        json_escape(alarm->label, escaped_label, sizeof(escaped_label));
+        snprintf(item_time, sizeof(item_time), "%02d:%02d", alarm->hour, alarm->minute);
+        append_jsonf(json, STATUS_JSON_BUFFER_SIZE, &offset,
+                     "%s{"
+                     "\"label\":\"%s\","
+                     "\"enabled\":%s,"
+                     "\"alarm_time\":\"%s\","
+                     "\"snooze_minutes\":%d,"
+                     "\"days_mask\":%u,"
+                     "\"active\":%s,"
+                     "\"snoozed_until_epoch\":%lld,"
+                     "\"last_alarm_epoch\":%lld"
+                     "}",
+                     i == 0 ? "" : ",",
+                     escaped_label,
+                     alarm->enabled ? "true" : "false",
+                     item_time,
+                     alarm->snooze_minutes,
+                     (unsigned)alarm->days_mask,
+                     alarm->active ? "true" : "false",
+                     (long long)alarm->snoozed_until_epoch,
+                     (long long)alarm->last_alarm_epoch);
+    }
+
+    append_jsonf(json, STATUS_JSON_BUFFER_SIZE, &offset, "]}");
     return json;
 }
 

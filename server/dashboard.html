@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Smart Alarm Clock</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090b10;
+      --surface: rgba(255,255,255,.075);
+      --surface-strong: rgba(255,255,255,.12);
+      --stroke: rgba(255,255,255,.18);
+      --stroke-soft: rgba(255,255,255,.10);
+      --text: #f6f8fb;
+      --muted: #9aa6b8;
+      --accent: #60dfc8;
+      --accent-2: #9bd5ff;
+      --ok: #7ee6a2;
+      --warn: #ffd06a;
+      --danger: #ff7f88;
+      --shadow: 0 18px 70px rgba(0,0,0,.38);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { min-height: 100%; }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        linear-gradient(125deg, rgba(96,223,200,.22), transparent 28%),
+        linear-gradient(215deg, rgba(155,213,255,.16), transparent 34%),
+        linear-gradient(180deg, #090b10 0%, #101721 50%, #090b10 100%);
+      background-attachment: fixed;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      content: "";
+      background:
+        linear-gradient(100deg, transparent 0%, rgba(255,255,255,.05) 42%, transparent 60%),
+        repeating-linear-gradient(135deg, rgba(255,255,255,.035) 0 1px, transparent 1px 28px);
+      animation: surfaceFlow 16s ease-in-out infinite alternate;
+      pointer-events: none;
+    }
+
+    @keyframes surfaceFlow {
+      from { transform: translate3d(-1.5%, -1%, 0) scale(1.02); opacity: .65; }
+      to { transform: translate3d(1.5%, 1%, 0) scale(1.04); opacity: .92; }
+    }
+
+    button, input, select { font: inherit; }
+
+    button {
+      min-height: 38px;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      color: var(--text);
+      background: rgba(255,255,255,.08);
+      cursor: pointer;
+      transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    }
+
+    button:hover { transform: translateY(-1px); border-color: rgba(255,255,255,.32); }
+    button:disabled { opacity: .55; cursor: wait; transform: none; }
+
+    .primary {
+      background: linear-gradient(135deg, rgba(96,223,200,.95), rgba(155,213,255,.82));
+      color: #071014;
+      border-color: transparent;
+      font-weight: 750;
+    }
+
+    .danger-button { color: var(--danger); }
+
+    input, select {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--stroke-soft);
+      border-radius: 8px;
+      padding: 8px 10px;
+      color: var(--text);
+      background: rgba(4,8,14,.34);
+      outline: none;
+    }
+
+    input:focus, select:focus {
+      border-color: rgba(96,223,200,.7);
+      box-shadow: 0 0 0 3px rgba(96,223,200,.11);
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      min-height: 18px;
+      accent-color: var(--accent);
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 28px));
+      margin: 0 auto;
+      padding: 28px 0 42px;
+      display: grid;
+      gap: 18px;
+    }
+
+    header {
+      min-height: 92px;
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+
+    h1 {
+      font-size: clamp(34px, 5vw, 66px);
+      line-height: .95;
+      letter-spacing: 0;
+    }
+
+    h2 { font-size: 17px; letter-spacing: 0; }
+    h3 { font-size: 13px; letter-spacing: .02em; color: var(--muted); }
+
+    .server-time {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .glass {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      background: linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.045));
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(22px) saturate(1.25);
+    }
+
+    .glass::after {
+      position: absolute;
+      inset: 0;
+      content: "";
+      background: linear-gradient(115deg, transparent, rgba(255,255,255,.13), transparent);
+      transform: translateX(-120%);
+      animation: glassSheen 9s ease-in-out infinite;
+      pointer-events: none;
+    }
+
+    @keyframes glassSheen {
+      0%, 62% { transform: translateX(-120%); }
+      100% { transform: translateX(120%); }
+    }
+
+    .panel {
+      padding: 18px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(340px, .8fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      min-height: 82px;
+      padding: 13px;
+      border-right: 1px solid var(--stroke-soft);
+      border-bottom: 1px solid var(--stroke-soft);
+    }
+
+    .metric-label {
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: .08em;
+    }
+
+    .metric-value {
+      margin-top: 7px;
+      font-size: 19px;
+      font-weight: 760;
+      overflow-wrap: anywhere;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .danger { color: var(--danger); }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .wide { grid-column: 1 / -1; }
+
+    .alarm-list {
+      display: grid;
+      gap: 0;
+      border-top: 1px solid var(--stroke-soft);
+    }
+
+    .alarm-row {
+      display: grid;
+      grid-template-columns: 24px minmax(120px, 1fr) 118px 98px 1fr 42px;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--stroke-soft);
+    }
+
+    .day-set {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 5px;
+    }
+
+    .day {
+      min-height: 32px;
+      padding: 0;
+      color: var(--muted);
+      font-weight: 760;
+    }
+
+    .day.active {
+      color: #051114;
+      background: rgba(96,223,200,.92);
+      border-color: transparent;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .message {
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px;
+      padding: 4px;
+      border: 1px solid var(--stroke-soft);
+      border-radius: 8px;
+      background: rgba(4,8,14,.26);
+    }
+
+    .segmented button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .segmented button.active {
+      background: rgba(255,255,255,.12);
+      color: var(--text);
+    }
+
+    .result-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .result-row {
+      display: grid;
+      grid-template-columns: 74px 1fr 96px;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 0;
+      border-top: 1px solid var(--stroke-soft);
+    }
+
+    .result-time {
+      font-size: 24px;
+      font-weight: 790;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .pill {
+      display: inline-flex;
+      min-height: 26px;
+      align-items: center;
+      border: 1px solid var(--stroke-soft);
+      border-radius: 999px;
+      padding: 3px 9px;
+      color: var(--muted);
+      background: rgba(255,255,255,.055);
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    @media (max-width: 900px) {
+      .dashboard-grid { grid-template-columns: 1fr; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .alarm-row { grid-template-columns: 24px 1fr 100px 86px 42px; }
+      .alarm-row .day-set { grid-column: 2 / -1; }
+    }
+
+    @media (max-width: 620px) {
+      main { width: min(100vw - 18px, 1180px); padding-top: 18px; }
+      header { align-items: start; flex-direction: column; min-height: auto; }
+      .metric-grid, .form-grid { grid-template-columns: 1fr; }
+      .alarm-row { grid-template-columns: 22px 1fr 42px; }
+      .alarm-row input[type="time"], .alarm-row input[type="number"], .alarm-row .day-set { grid-column: 2 / -1; }
+      .result-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Smart Alarm Clock</h1>
+      <div id="serverTime" class="server-time">--</div>
+    </header>
+
+    <section class="glass panel">
+      <div class="panel-head">
+        <h2>Monitoring</h2>
+        <span id="syncState" class="pill">Waiting</span>
+      </div>
+      <div class="metric-grid">
+        <div class="metric"><div class="metric-label">Device</div><div id="deviceId" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">Connection</div><div id="connection" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">Alarm</div><div id="alarmState" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">Clock</div><div id="deviceTime" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">Temperature</div><div id="temperature" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">Humidity</div><div id="humidity" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">Air Quality</div><div id="airQuality" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">VOC / eCO2</div><div id="airChemistry" class="metric-value">--</div></div>
+      </div>
+    </section>
+
+    <div class="dashboard-grid">
+      <section class="glass panel">
+        <div class="panel-head">
+          <h2>Alarms</h2>
+          <button id="addAlarmButton" type="button" title="Add alarm">+</button>
+        </div>
+        <form id="settingsForm">
+          <div id="alarmList" class="alarm-list"></div>
+          <div class="actions">
+            <button id="saveButton" class="primary" type="submit">Save</button>
+            <span id="message" class="message"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="glass panel">
+        <div class="panel-head">
+          <h2>Sleep Schedule</h2>
+          <span id="sleepTarget" class="pill">5 cycles</span>
+        </div>
+        <div class="form-grid">
+          <label class="wide">
+            Age group
+            <select id="ageGroup"></select>
+          </label>
+          <label>
+            Time to fall asleep
+            <input id="fallAsleep" type="number" min="0" max="90" step="1">
+          </label>
+          <label>
+            Cycle length
+            <input id="cycleMinutes" type="number" min="70" max="120" step="1">
+          </label>
+          <label>
+            Preferred cycles
+            <select id="preferredCycles">
+              <option value="3">3 cycles</option>
+              <option value="4">4 cycles</option>
+              <option value="5">5 cycles</option>
+              <option value="6">6 cycles</option>
+            </select>
+          </label>
+          <label>
+            Everyday
+            <input id="sleepEveryday" type="checkbox">
+          </label>
+          <div class="wide segmented">
+            <button id="wakeMode" type="button">Wake at</button>
+            <button id="bedMode" type="button">Sleep at</button>
+          </div>
+          <label id="wakeTimeField">
+            Wake time
+            <input id="wakeTime" type="time">
+          </label>
+          <label id="bedTimeField">
+            Bed time
+            <input id="bedTime" type="time">
+          </label>
+        </div>
+        <div>
+          <h3>Recommendations</h3>
+          <div id="sleepResults" class="result-list"></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const days = [
+      ["S", 1 << 0], ["M", 1 << 1], ["T", 1 << 2], ["W", 1 << 3],
+      ["T", 1 << 4], ["F", 1 << 5], ["S", 1 << 6],
+    ];
+    const ageGroups = {
+      newborn: ["0-3 months", 14, 17],
+      infant: ["4-12 months", 12, 16],
+      toddler: ["1-2 years", 11, 14],
+      preschool: ["3-5 years", 10, 13],
+      school_age: ["6-12 years", 9, 12],
+      teen: ["13-17 years", 8, 10],
+      adult_18_60: ["18-60 years", 7, 24],
+      adult_61_64: ["61-64 years", 7, 9],
+      adult_65: ["65+ years", 7, 8],
+    };
+
+    let alarms = [];
+    let sleepProfile = {};
+    let scheduleMode = "wake_at";
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[ch]));
+    }
+
+    function formatEpoch(value) {
+      return value ? new Date(value * 1000).toLocaleString() : "--";
+    }
+
+    function minutesToTime(total) {
+      const day = 24 * 60;
+      const minutes = ((Math.round(total) % day) + day) % day;
+      return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+    }
+
+    function timeToMinutes(value) {
+      const [hours, minutes] = String(value || "00:00").split(":").map(Number);
+      return (hours || 0) * 60 + (minutes || 0);
+    }
+
+    function airQualityLabel(index) {
+      return ["", "Excellent", "Good", "Moderate", "Poor", "Unhealthy"][index] || "Unknown";
+    }
+
+    function setTone(el, tone) {
+      el.className = `metric-value${tone ? " " + tone : ""}`;
+    }
+
+    async function fetchJson(url, options) {
+      const response = await fetch(url, options);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      return data;
+    }
+
+    function normalizeAlarm(alarm, index) {
+      return {
+        id: alarm.id || `alarm-${Date.now()}-${index}`,
+        label: alarm.label || `Alarm ${index + 1}`,
+        enabled: Boolean(alarm.enabled),
+        alarm_time: alarm.alarm_time || "07:00",
+        snooze_minutes: Number(alarm.snooze_minutes || 5),
+        days_mask: Number(alarm.days_mask || 127),
+      };
+    }
+
+    function renderAgeGroups() {
+      byId("ageGroup").innerHTML = Object.entries(ageGroups)
+        .map(([key, [label, min, max]]) => {
+          const range = max >= 24 ? `${min}+ h` : `${min}-${max} h`;
+          return `<option value="${key}">${label} - ${range}</option>`;
+        })
+        .join("");
+    }
+
+    function renderAlarms() {
+      byId("alarmList").innerHTML = alarms.map((alarm, index) => `
+        <div class="alarm-row" data-index="${index}">
+          <input data-field="enabled" type="checkbox" ${alarm.enabled ? "checked" : ""} aria-label="Enabled">
+          <input data-field="label" type="text" maxlength="23" value="${escapeHtml(alarm.label)}" aria-label="Label">
+          <input data-field="alarm_time" type="time" value="${escapeHtml(alarm.alarm_time)}" aria-label="Time">
+          <input data-field="snooze_minutes" type="number" min="1" max="120" step="1" value="${alarm.snooze_minutes}" aria-label="Snooze">
+          <div class="day-set">
+            ${days.map(([label, bit]) => `<button type="button" class="day ${(alarm.days_mask & bit) ? "active" : ""}" data-day="${bit}">${label}</button>`).join("")}
+          </div>
+          <button type="button" class="danger-button" data-remove title="Remove alarm">x</button>
+        </div>
+      `).join("");
+    }
+
+    function bindAlarmEvents() {
+      byId("alarmList").addEventListener("input", (event) => {
+        const row = event.target.closest(".alarm-row");
+        if (!row) return;
+        const alarm = alarms[Number(row.dataset.index)];
+        const field = event.target.dataset.field;
+        if (!alarm || !field) return;
+        alarm[field] = event.target.type === "number" ? Number(event.target.value) : event.target.value;
+      });
+
+      byId("alarmList").addEventListener("change", (event) => {
+        const row = event.target.closest(".alarm-row");
+        if (!row) return;
+        const alarm = alarms[Number(row.dataset.index)];
+        if (alarm && event.target.dataset.field === "enabled") alarm.enabled = event.target.checked;
+      });
+
+      byId("alarmList").addEventListener("click", (event) => {
+        const row = event.target.closest(".alarm-row");
+        if (!row) return;
+        const index = Number(row.dataset.index);
+        if (event.target.matches("[data-remove]")) {
+          alarms.splice(index, 1);
+          renderAlarms();
+          return;
+        }
+        if (event.target.matches("[data-day]")) {
+          const bit = Number(event.target.dataset.day);
+          alarms[index].days_mask ^= bit;
+          if (alarms[index].days_mask === 0) alarms[index].days_mask = 127;
+          renderAlarms();
+        }
+      });
+    }
+
+    function renderSleepProfile() {
+      byId("ageGroup").value = sleepProfile.age_group || "adult_18_60";
+      byId("fallAsleep").value = Number(sleepProfile.time_to_fall_asleep ?? 15);
+      byId("cycleMinutes").value = Number(sleepProfile.cycle_minutes ?? 90);
+      byId("preferredCycles").value = String(sleepProfile.preferred_cycles ?? 5);
+      byId("sleepEveryday").checked = sleepProfile.everyday !== false;
+      byId("wakeTime").value = sleepProfile.wake_time || "07:00";
+      byId("bedTime").value = sleepProfile.bed_time || "23:00";
+      scheduleMode = sleepProfile.schedule_mode || "wake_at";
+      renderScheduleMode();
+      renderSleepResults();
+    }
+
+    function readSleepProfile() {
+      return {
+        age_group: byId("ageGroup").value,
+        time_to_fall_asleep: Number(byId("fallAsleep").value || 15),
+        cycle_minutes: Number(byId("cycleMinutes").value || 90),
+        preferred_cycles: Number(byId("preferredCycles").value || 5),
+        schedule_mode: scheduleMode,
+        wake_time: byId("wakeTime").value || "07:00",
+        bed_time: byId("bedTime").value || "23:00",
+        everyday: byId("sleepEveryday").checked,
+      };
+    }
+
+    function renderScheduleMode() {
+      byId("wakeMode").classList.toggle("active", scheduleMode === "wake_at");
+      byId("bedMode").classList.toggle("active", scheduleMode === "bed_at");
+      byId("wakeTimeField").style.display = scheduleMode === "wake_at" ? "grid" : "none";
+      byId("bedTimeField").style.display = scheduleMode === "bed_at" ? "grid" : "none";
+    }
+
+    function renderSleepResults() {
+      sleepProfile = readSleepProfile();
+      const group = ageGroups[sleepProfile.age_group] || ageGroups.adult_18_60;
+      const [label, minHours, maxHours] = group;
+      const cycles = [3, 4, 5, 6];
+      const sourceMinutes = scheduleMode === "wake_at" ? timeToMinutes(sleepProfile.wake_time) : timeToMinutes(sleepProfile.bed_time);
+      byId("sleepTarget").textContent = `${label}`;
+
+      byId("sleepResults").innerHTML = cycles.map((cycleCount) => {
+        const sleepMinutes = cycleCount * sleepProfile.cycle_minutes;
+        const totalHours = sleepMinutes / 60;
+        const targetMinutes = scheduleMode === "wake_at"
+          ? sourceMinutes - sleepProfile.time_to_fall_asleep - sleepMinutes
+          : sourceMinutes + sleepProfile.time_to_fall_asleep + sleepMinutes;
+        const timeValue = minutesToTime(targetMinutes);
+        const inRange = totalHours >= minHours && totalHours <= maxHours;
+        const preferred = cycleCount === sleepProfile.preferred_cycles;
+        const labelText = scheduleMode === "wake_at" ? "Bedtime" : "Wake";
+        return `
+          <div class="result-row">
+            <div>
+              <div class="small">${labelText}</div>
+              <div class="result-time">${timeValue}</div>
+            </div>
+            <div>
+              <span class="pill ${inRange ? "ok" : "warn"}">${cycleCount} cycles - ${totalHours.toFixed(1)} h</span>
+              ${preferred ? `<span class="pill">Preferred</span>` : ""}
+            </div>
+            <button type="button" class="primary" data-result-time="${timeValue}">${scheduleMode === "wake_at" ? "Set" : "+ Alarm"}</button>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function addAlarmFromSleep(timeValue) {
+      const everyDay = byId("sleepEveryday").checked;
+      const alarmTime = scheduleMode === "wake_at" ? byId("wakeTime").value : timeValue;
+      if (alarms.length >= 8) return;
+      alarms.push(normalizeAlarm({
+        label: scheduleMode === "wake_at" ? "Wake" : "Sleep cycle",
+        enabled: true,
+        alarm_time: alarmTime,
+        snooze_minutes: 5,
+        days_mask: everyDay ? 127 : 62,
+      }, alarms.length));
+      renderAlarms();
+    }
+
+    async function loadSettings() {
+      const settings = await fetchJson("/api/alarm-settings");
+      alarms = (settings.alarms || []).map(normalizeAlarm);
+      sleepProfile = settings.sleep_profile || {};
+      byId("serverTime").textContent = settings.server_iso || "--";
+      renderAlarms();
+      renderSleepProfile();
+    }
+
+    async function loadStatus() {
+      const payload = await fetchJson("/api/status");
+      const status = payload.status || {};
+      byId("serverTime").textContent = payload.server_iso || "--";
+      byId("deviceId").textContent = status.device_id || "--";
+
+      const connection = byId("connection");
+      connection.textContent = status.wifi_connected ? "Wi-Fi" : "Waiting";
+      setTone(connection, status.wifi_connected ? "ok" : "warn");
+
+      const alarmState = byId("alarmState");
+      if (status.ringing) {
+        const active = (status.alarms || []).filter((alarm) => alarm.active).map((alarm) => alarm.label).join(", ");
+        alarmState.textContent = active || "Ringing";
+        setTone(alarmState, "danger");
+      } else {
+        alarmState.textContent = `${status.alarm_count ?? alarms.length} scheduled`;
+        setTone(alarmState, status.alarm_enabled ? "ok" : "");
+      }
+
+      byId("deviceTime").textContent = status.time_valid ? formatEpoch(status.device_epoch) : "Not synced";
+      byId("temperature").textContent = status.environment_valid && status.temperature_c !== undefined ? `${Number(status.temperature_c).toFixed(1)} C` : "--";
+      byId("humidity").textContent = status.environment_valid && status.humidity_percent !== undefined ? `${Number(status.humidity_percent).toFixed(1)} %` : "--";
+
+      const aqi = Number(status.air_quality_index || 0);
+      const airQuality = byId("airQuality");
+      airQuality.textContent = status.air_quality_valid && aqi > 0 ? `AQI ${aqi} - ${airQualityLabel(aqi)}` : "--";
+      setTone(airQuality, aqi >= 4 ? "danger" : aqi === 3 ? "warn" : aqi > 0 ? "ok" : "");
+      byId("airChemistry").textContent = status.air_quality_valid ? `${Number(status.tvoc_ppb || 0)} ppb / ${Number(status.eco2_ppm || 0)} ppm` : "--";
+
+      byId("syncState").textContent = status.received_at ? `Updated ${status.received_at}` : "Waiting";
+    }
+
+    async function saveSettings() {
+      const button = byId("saveButton");
+      button.disabled = true;
+      byId("message").textContent = "Saving...";
+      try {
+        const payload = {
+          alarms: alarms.slice(0, 8).map((alarm, index) => normalizeAlarm(alarm, index)),
+          sleep_profile: readSleepProfile(),
+        };
+        await fetchJson("/api/alarm-settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        byId("message").textContent = "Saved";
+        await loadSettings();
+      } catch (error) {
+        byId("message").textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function bindSleepEvents() {
+      ["ageGroup", "fallAsleep", "cycleMinutes", "preferredCycles", "sleepEveryday", "wakeTime", "bedTime"].forEach((id) => {
+        byId(id).addEventListener("input", renderSleepResults);
+        byId(id).addEventListener("change", renderSleepResults);
+      });
+      byId("wakeMode").addEventListener("click", () => { scheduleMode = "wake_at"; renderScheduleMode(); renderSleepResults(); });
+      byId("bedMode").addEventListener("click", () => { scheduleMode = "bed_at"; renderScheduleMode(); renderSleepResults(); });
+      byId("sleepResults").addEventListener("click", (event) => {
+        const button = event.target.closest("[data-result-time]");
+        if (button) addAlarmFromSleep(button.dataset.resultTime);
+      });
+    }
+
+    renderAgeGroups();
+    bindAlarmEvents();
+    bindSleepEvents();
+    byId("addAlarmButton").addEventListener("click", () => {
+      if (alarms.length >= 8) return;
+      alarms.push(normalizeAlarm({ enabled: true, label: `Alarm ${alarms.length + 1}` }, alarms.length));
+      renderAlarms();
+    });
+    byId("settingsForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveSettings();
+    });
+
+    loadSettings().catch((error) => byId("message").textContent = error.message);
+    loadStatus().catch(() => {});
+    setInterval(() => loadStatus().catch(() => {}), 2000);
+  </script>
+</body>
+</html>
