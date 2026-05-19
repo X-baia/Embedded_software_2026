@@ -109,10 +109,12 @@ static void refresh_alarm_summary_locked(void)
         s_state.alarm_hour = selected->hour;
         s_state.alarm_minute = selected->minute;
         s_state.snooze_minutes = selected->snooze_minutes;
+        s_state.volume = selected->volume;
     } else {
         s_state.alarm_hour = APP_DEFAULT_ALARM_HOUR;
         s_state.alarm_minute = APP_DEFAULT_ALARM_MINUTE;
         s_state.snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
+        s_state.volume = 20;
     }
 }
 
@@ -131,6 +133,9 @@ static alarm_entry_t normalized_alarm(const alarm_entry_t *source, int index)
     }
     if (alarm.snooze_minutes < 1 || alarm.snooze_minutes > 120) {
         alarm.snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
+    }
+    if (alarm.volume < 0 || alarm.volume > 30) {
+        alarm.volume = 20;
     }
     if (alarm.days_mask == 0 || (alarm.days_mask & ~ALARM_DAYS_EVERYDAY) != 0) {
         alarm.days_mask = ALARM_DAYS_EVERYDAY;
@@ -174,6 +179,7 @@ void alarm_manager_init(void)
     s_state.alarms[0].hour = APP_DEFAULT_ALARM_HOUR;
     s_state.alarms[0].minute = APP_DEFAULT_ALARM_MINUTE;
     s_state.alarms[0].snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
+    s_state.alarms[0].volume = 20;
     s_state.alarms[0].days_mask = ALARM_DAYS_EVERYDAY;
     s_state.alarms[0].last_fired_day_key = -1;
     copy_text(s_state.alarms[0].label, sizeof(s_state.alarms[0].label), "Alarm 1");
@@ -230,12 +236,14 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
         alarm_entry_t next_alarm = normalized_alarm(&settings->alarms[i], i);
         next_alarm.active = false;
         next_alarm.snoozed_until_epoch = 0;
+        next_alarm.snoozed_until_uptime_ms = 0;
         next_alarm.last_alarm_epoch = 0;
         next_alarm.last_fired_day_key = -1;
 
         if (i < previous_count && alarm_schedule_equal(&previous[i], &next_alarm)) {
             next_alarm.active = previous[i].enabled && previous[i].active;
             next_alarm.snoozed_until_epoch = previous[i].enabled ? previous[i].snoozed_until_epoch : 0;
+            next_alarm.snoozed_until_uptime_ms = previous[i].enabled ? previous[i].snoozed_until_uptime_ms : 0;
             next_alarm.last_alarm_epoch = previous[i].last_alarm_epoch;
             next_alarm.last_fired_day_key = previous[i].last_fired_day_key;
         }
@@ -243,6 +251,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
         if (!next_alarm.enabled) {
             next_alarm.active = false;
             next_alarm.snoozed_until_epoch = 0;
+            next_alarm.snoozed_until_uptime_ms = 0;
         }
 
         s_state.alarms[i] = next_alarm;
@@ -322,6 +331,7 @@ void alarm_manager_snooze(void)
 {
     bool should_stop_audio = false;
     time_t now = time(NULL);
+    int64_t now_ms = esp_timer_get_time() / 1000;
 
     lock_state();
     if (s_state.ringing) {
@@ -338,6 +348,7 @@ void alarm_manager_snooze(void)
 
             alarm->active = false;
             alarm->snoozed_until_epoch = time_is_valid(now) ? (int64_t)now + snooze_seconds : 0;
+            alarm->snoozed_until_uptime_ms = now_ms + ((int64_t)snooze_seconds * 1000);
             ESP_LOGI(TAG, "Alarm '%s' snoozed for %d minutes", alarm->label, alarm->snooze_minutes);
         }
 
@@ -362,6 +373,7 @@ void alarm_manager_stop(void)
     for (int i = 0; i < s_state.alarm_count; i++) {
         s_state.alarms[i].active = false;
         s_state.alarms[i].snoozed_until_epoch = 0;
+        s_state.alarms[i].snoozed_until_uptime_ms = 0;
     }
     refresh_alarm_summary_locked();
     unlock_state();
@@ -377,53 +389,63 @@ void alarm_manager_task(void *pvParameters)
 
     while (1) {
         bool should_start_audio = false;
+        uint8_t play_volume = 20;
         time_t now = time(NULL);
+        int64_t now_ms = esp_timer_get_time() / 1000;
 
         lock_state();
         s_state.time_valid = time_is_valid(now);
 
+        bool was_ringing = s_state.ringing;
+        bool newly_active = false;
+        struct tm local_now = {0};
+        int today_key = -1;
         if (s_state.time_valid) {
-            bool was_ringing = s_state.ringing;
-            bool newly_active = false;
-            struct tm local_now;
             localtime_r(&now, &local_now);
-            int today_key = alarm_day_key(&local_now);
+            today_key = alarm_day_key(&local_now);
+        }
 
-            for (int i = 0; i < s_state.alarm_count; i++) {
-                alarm_entry_t *alarm = &s_state.alarms[i];
-                if (!alarm->enabled || alarm->active) {
-                    continue;
-                }
-
-                if (alarm->snoozed_until_epoch > 0 && now >= alarm->snoozed_until_epoch) {
-                    alarm->active = true;
-                    alarm->snoozed_until_epoch = 0;
-                    alarm->last_alarm_epoch = now;
-                    newly_active = true;
-                    ESP_LOGI(TAG, "Snoozed alarm '%s' ringing", alarm->label);
-                    continue;
-                }
-
-                if (alarm->snoozed_until_epoch == 0 &&
-                    alarm_runs_today(alarm, &local_now) &&
-                    local_now.tm_hour == alarm->hour &&
-                    local_now.tm_min == alarm->minute &&
-                    alarm->last_fired_day_key != today_key) {
-                    alarm->active = true;
-                    alarm->last_alarm_epoch = now;
-                    alarm->last_fired_day_key = today_key;
-                    newly_active = true;
-                    ESP_LOGI(TAG, "Alarm '%s' ringing", alarm->label);
-                }
+        for (int i = 0; i < s_state.alarm_count; i++) {
+            alarm_entry_t *alarm = &s_state.alarms[i];
+            if (!alarm->enabled || alarm->active) {
+                continue;
             }
 
-            refresh_alarm_summary_locked();
-            should_start_audio = newly_active && !was_ringing && s_state.ringing;
+            if (alarm->snoozed_until_uptime_ms > 0 && now_ms >= alarm->snoozed_until_uptime_ms) {
+                alarm->active = true;
+                alarm->snoozed_until_epoch = 0;
+                alarm->snoozed_until_uptime_ms = 0;
+                alarm->last_alarm_epoch = s_state.time_valid ? now : 0;
+                newly_active = true;
+                play_volume = (uint8_t)alarm->volume;
+                ESP_LOGI(TAG, "Snoozed alarm '%s' ringing", alarm->label);
+                continue;
+            }
+
+            if (!s_state.time_valid) {
+                continue;
+            }
+
+            if (alarm->snoozed_until_uptime_ms == 0 &&
+                alarm_runs_today(alarm, &local_now) &&
+                local_now.tm_hour == alarm->hour &&
+                local_now.tm_min == alarm->minute &&
+                alarm->last_fired_day_key != today_key) {
+                alarm->active = true;
+                alarm->last_alarm_epoch = now;
+                alarm->last_fired_day_key = today_key;
+                newly_active = true;
+                play_volume = (uint8_t)alarm->volume;
+                ESP_LOGI(TAG, "Alarm '%s' ringing", alarm->label);
+            }
         }
+
+        refresh_alarm_summary_locked();
+        should_start_audio = newly_active && !was_ringing && s_state.ringing;
         unlock_state();
 
         if (should_start_audio) {
-            audio_player_play_alarm();
+            audio_player_play_alarm(play_volume);
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));

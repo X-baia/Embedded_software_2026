@@ -13,10 +13,12 @@ typedef struct {
     int hour;
     int minute;
     int snooze_minutes;
+    int volume;
     uint8_t days_mask;
     char label[ALARM_LABEL_SIZE];
     bool active;
     int64_t snoozed_until_epoch;
+    int64_t snoozed_until_uptime_ms;
     int64_t last_alarm_epoch;
     int last_fired_day_key;
 } alarm_entry_t;
@@ -32,6 +34,7 @@ typedef struct {
     int alarm_hour;
     int alarm_minute;
     int snooze_minutes;
+    int volume;
     bool ringing;
     int alarm_count;
     int active_alarm_count;
