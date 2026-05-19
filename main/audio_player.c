@@ -67,9 +67,9 @@ void audio_player_set_volume(uint8_t volume) {
     dfplayer_send_command(0x06, volume);
 }
 
-void audio_player_play_alarm(void) {
-    ESP_LOGI(TAG, "Playing alarm track %d", DFPLAYER_ALARM_TRACK);
-    audio_player_set_volume(DFPLAYER_DEFAULT_VOLUME);
+void audio_player_play_alarm(uint8_t volume) {
+    ESP_LOGI(TAG, "Playing alarm track %d at volume %u", DFPLAYER_ALARM_TRACK, (unsigned)volume);
+    audio_player_set_volume(volume);
     dfplayer_send_command(0x03, DFPLAYER_ALARM_TRACK);
 }
 

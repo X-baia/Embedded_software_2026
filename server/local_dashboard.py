@@ -37,6 +37,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "enabled": False,
             "alarm_time": "07:00",
             "snooze_minutes": 5,
+            "volume": 20,
             "days_mask": 127,
         }
     ],
@@ -58,6 +59,7 @@ DEFAULT_STATUS: dict[str, Any] = {
     "alarm_enabled": False,
     "alarm_time": "07:00",
     "snooze_minutes": 5,
+    "volume": 20,
     "ringing": False,
     "alarm_count": 0,
     "active_alarm_count": 0,
@@ -73,6 +75,18 @@ DEFAULT_STATUS: dict[str, Any] = {
 
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 STATE_LOCK = threading.Lock()
+
+AGE_SLEEP_HOURS: dict[str, tuple[int, int]] = {
+    "newborn": (14, 17),
+    "infant": (12, 16),
+    "toddler": (11, 14),
+    "preschool": (10, 13),
+    "school_age": (9, 12),
+    "teen": (8, 10),
+    "adult_18_60": (7, 9),
+    "adult_61_64": (7, 9),
+    "adult_65": (7, 8),
+}
 
 
 FALLBACK_INDEX_HTML = """<!doctype html>
@@ -144,9 +158,17 @@ def parse_int(value: Any, default: int, minimum: int, maximum: int, name: str) -
     return parsed
 
 
-def normalize_alarm(raw: Any, index: int) -> dict[str, Any]:
+def preferred_cycles_for_age(age_group: str) -> int:
+    min_hours, max_hours = AGE_SLEEP_HOURS.get(age_group, AGE_SLEEP_HOURS["adult_18_60"])
+    midpoint_minutes = ((min_hours + max_hours) / 2) * 60
+    return max(3, min(12, round(midpoint_minutes / 90)))
+
+
+def normalize_alarm(raw: Any, index: int, previous: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("Each alarm must be an object")
+    if not isinstance(previous, dict):
+        previous = {}
 
     alarm_time = str(raw.get("alarm_time", "07:00")).strip()
     if not TIME_RE.match(alarm_time):
@@ -161,6 +183,7 @@ def normalize_alarm(raw: Any, index: int) -> dict[str, Any]:
         "enabled": bool(raw.get("enabled", False)),
         "alarm_time": alarm_time,
         "snooze_minutes": parse_int(raw.get("snooze_minutes", 5), 5, 1, 120, "snooze_minutes"),
+        "volume": parse_int(raw.get("volume", previous.get("volume", 20)), 20, 0, 30, "volume"),
         "days_mask": parse_int(raw.get("days_mask", ALARM_DAYS_EVERYDAY), ALARM_DAYS_EVERYDAY, 1, ALARM_DAYS_EVERYDAY, "days_mask"),
     }
 
@@ -184,8 +207,8 @@ def normalize_sleep_profile(raw: Any) -> dict[str, Any]:
     return {
         "age_group": str(raw.get("age_group", default["age_group"]))[:32],
         "time_to_fall_asleep": parse_int(raw.get("time_to_fall_asleep", default["time_to_fall_asleep"]), default["time_to_fall_asleep"], 0, 90, "time_to_fall_asleep"),
-        "cycle_minutes": parse_int(raw.get("cycle_minutes", default["cycle_minutes"]), default["cycle_minutes"], 70, 120, "cycle_minutes"),
-        "preferred_cycles": parse_int(raw.get("preferred_cycles", default["preferred_cycles"]), default["preferred_cycles"], 3, 6, "preferred_cycles"),
+        "cycle_minutes": 90,
+        "preferred_cycles": preferred_cycles_for_age(str(raw.get("age_group", default["age_group"]))[:32]),
         "schedule_mode": schedule_mode,
         "wake_time": wake_time,
         "bed_time": bed_time,
@@ -193,12 +216,23 @@ def normalize_sleep_profile(raw: Any) -> dict[str, Any]:
     }
 
 
-def normalize_settings(payload: dict[str, Any]) -> dict[str, Any]:
+def normalize_settings(payload: dict[str, Any], previous_settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    previous_alarms = []
+    if isinstance(previous_settings, dict) and isinstance(previous_settings.get("alarms"), list):
+        previous_alarms = previous_settings["alarms"]
+
     if "alarms" in payload:
         raw_alarms = payload.get("alarms")
         if not isinstance(raw_alarms, list):
             raise ValueError("alarms must be an array")
-        alarms = [normalize_alarm(raw_alarm, index) for index, raw_alarm in enumerate(raw_alarms[:MAX_ALARMS])]
+        alarms = [
+            normalize_alarm(
+                raw_alarm,
+                index,
+                previous_alarms[index] if index < len(previous_alarms) else None,
+            )
+            for index, raw_alarm in enumerate(raw_alarms[:MAX_ALARMS])
+        ]
     else:
         alarms = [
             normalize_alarm(
@@ -208,6 +242,7 @@ def normalize_settings(payload: dict[str, Any]) -> dict[str, Any]:
                     "enabled": payload.get("enabled", False),
                     "alarm_time": payload.get("alarm_time", "07:00"),
                     "snooze_minutes": payload.get("snooze_minutes", 5),
+                    "volume": payload.get("volume", 20),
                     "days_mask": ALARM_DAYS_EVERYDAY,
                 },
                 0,
@@ -231,13 +266,14 @@ def settings_response(settings: dict[str, Any]) -> dict[str, Any]:
             "enabled": first_alarm["enabled"],
             "alarm_time": first_alarm["alarm_time"],
             "snooze_minutes": first_alarm["snooze_minutes"],
+            "volume": first_alarm["volume"],
         }
     )
     return response
 
 
-def validate_settings(payload: dict[str, Any]) -> dict[str, Any]:
-    settings = normalize_settings(payload)
+def validate_settings(payload: dict[str, Any], previous_settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = normalize_settings(payload, previous_settings)
     settings.update(
         {
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -292,7 +328,9 @@ class AlarmRequestHandler(BaseHTTPRequestHandler):
     def handle_settings_post(self) -> None:
         try:
             payload = self.read_json_body()
-            settings = validate_settings(payload)
+            with STATE_LOCK:
+                previous_settings = load_json(SETTINGS_FILE, DEFAULT_SETTINGS)
+            settings = validate_settings(payload, previous_settings)
         except ValueError as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             return

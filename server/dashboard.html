@@ -177,7 +177,7 @@
 
     .metric-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 0;
     }
 
@@ -229,13 +229,43 @@
       border-top: 1px solid var(--stroke-soft);
     }
 
+    .alarm-legend,
     .alarm-row {
       display: grid;
-      grid-template-columns: 22px minmax(112px, 1fr) 106px 84px minmax(160px, 1fr) 38px;
+      grid-template-columns: 44px minmax(104px, 1fr) 96px 96px minmax(118px, .75fr) minmax(160px, 1fr) 52px;
       gap: 8px;
       align-items: center;
+    }
+
+    .alarm-legend {
+      min-height: 26px;
+      padding: 4px 0;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      border-bottom: 1px solid var(--stroke-soft);
+    }
+
+    .alarm-row {
       padding: 10px 0;
       border-bottom: 1px solid var(--stroke-soft);
+    }
+
+    .volume-control {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 24px;
+      gap: 6px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .volume-control input {
+      min-width: 0;
+      padding: 0;
     }
 
     .day-set {
@@ -383,19 +413,29 @@
       min-height: 28px;
     }
 
+    #sleepNowButton {
+      justify-self: start;
+      align-self: end;
+      min-height: 28px;
+      padding: 0 10px;
+      width: auto;
+    }
+
     @media (max-width: 900px) {
       .dashboard-grid { grid-template-columns: 1fr; }
-      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .alarm-legend { display: none; }
       .alarm-row { grid-template-columns: 24px 1fr 100px 86px 42px; }
+      .alarm-row .volume-control { grid-column: 2 / -1; }
       .alarm-row .day-set { grid-column: 2 / -1; }
     }
 
     @media (max-width: 620px) {
       main { width: min(100vw - 18px, 1220px); padding-top: 14px; }
       header { align-items: start; flex-direction: column; min-height: auto; }
-      .metric-grid, .form-grid { grid-template-columns: 1fr; }
+      .form-grid { grid-template-columns: 1fr; }
       .alarm-row { grid-template-columns: 22px 1fr 42px; }
-      .alarm-row input[type="time"], .alarm-row input[type="number"], .alarm-row .day-set { grid-column: 2 / -1; }
+      .alarm-row input[type="time"], .alarm-row input[type="number"], .alarm-row .volume-control, .alarm-row .day-set { grid-column: 2 / -1; }
       .result-row {
         grid-template-columns: 58px minmax(0, 1fr) 58px;
         grid-template-areas: "time meta action";
@@ -418,12 +458,13 @@
       <div class="metric-grid">
         <div class="metric"><div class="metric-label">Device</div><div id="deviceId" class="metric-value">--</div></div>
         <div class="metric"><div class="metric-label">Connection</div><div id="connection" class="metric-value">--</div></div>
-        <div class="metric"><div class="metric-label">Alarm</div><div id="alarmState" class="metric-value">--</div></div>
-        <div class="metric"><div class="metric-label">Clock</div><div id="deviceTime" class="metric-value">--</div></div>
         <div class="metric"><div class="metric-label">Temperature</div><div id="temperature" class="metric-value">--</div></div>
         <div class="metric"><div class="metric-label">Humidity</div><div id="humidity" class="metric-value">--</div></div>
         <div class="metric"><div class="metric-label">Air Quality</div><div id="airQuality" class="metric-value">--</div></div>
         <div class="metric"><div class="metric-label">VOC / eCO2</div><div id="airChemistry" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">Clock</div><div id="deviceTime" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">Alarm</div><div id="alarmState" class="metric-value">--</div></div>
+        <div class="metric"><div class="metric-label">Next Alarm</div><div id="nextAlarm" class="metric-value">--</div></div>
       </div>
     </section>
 
@@ -457,19 +498,6 @@
             <input id="fallAsleep" type="number" min="0" max="90" step="1">
           </label>
           <label>
-            Cycle length
-            <input id="cycleMinutes" type="number" min="70" max="120" step="1">
-          </label>
-          <label>
-            Preferred cycles
-            <select id="preferredCycles">
-              <option value="3">3 cycles</option>
-              <option value="4">4 cycles</option>
-              <option value="5">5 cycles</option>
-              <option value="6">6 cycles</option>
-            </select>
-          </label>
-          <label>
             Everyday
             <input id="sleepEveryday" type="checkbox">
           </label>
@@ -485,6 +513,7 @@
             Bed time
             <input id="bedTime" type="time">
           </label>
+          <button id="sleepNowButton" type="button">Sleep Now</button>
         </div>
         <div>
           <h3>Recommendations</h3>
@@ -507,7 +536,7 @@
       preschool: ["3-5 years", 10, 13],
       school_age: ["6-12 years", 9, 12],
       teen: ["13-17 years", 8, 10],
-      adult_18_60: ["18-60 years", 7, 24],
+      adult_18_60: ["18-60 years", 7, 9],
       adult_61_64: ["61-64 years", 7, 9],
       adult_65: ["65+ years", 7, 8],
     };
@@ -553,14 +582,45 @@
     }
 
     function normalizeAlarm(alarm, index) {
+      const volume = alarm.volume ?? alarm.alarm_volume ?? 20;
       return {
         id: alarm.id || `alarm-${Date.now()}-${index}`,
         label: alarm.label || `Alarm ${index + 1}`,
         enabled: Boolean(alarm.enabled),
         alarm_time: alarm.alarm_time || "07:00",
         snooze_minutes: Number(alarm.snooze_minutes || 5),
+        volume: Math.min(30, Math.max(0, Number(volume))),
         days_mask: Number(alarm.days_mask || 127),
       };
+    }
+
+    function readAlarmsFromDom() {
+      alarms = [...byId("alarmList").querySelectorAll(".alarm-row")].map((row, index) => {
+        const current = alarms[Number(row.dataset.index)] || {};
+        return normalizeAlarm({
+          ...current,
+          enabled: row.querySelector('[data-field="enabled"]')?.checked ?? false,
+          label: row.querySelector('[data-field="label"]')?.value || `Alarm ${index + 1}`,
+          alarm_time: row.querySelector('[data-field="alarm_time"]')?.value || "07:00",
+          snooze_minutes: Number(row.querySelector('[data-field="snooze_minutes"]')?.value || 5),
+          volume: Number(row.querySelector('[data-field="volume"]')?.value ?? 20),
+          days_mask: current.days_mask || 127,
+        }, index);
+      });
+      return alarms;
+    }
+
+    function preferredCyclesForAge(ageGroup) {
+      const [, minHours, maxHours] = ageGroups[ageGroup] || ageGroups.adult_18_60;
+      return Math.min(12, Math.max(3, Math.round((((minHours + maxHours) / 2) * 60) / 90)));
+    }
+
+    function recommendationCycles(preferred) {
+      const start = Math.max(3, preferred - 1);
+      const cycles = [];
+      for (let value = start; cycles.length < 4 && value <= 12; value += 1) cycles.push(value);
+      for (let value = start - 1; cycles.length < 4 && value >= 3; value -= 1) cycles.unshift(value);
+      return cycles;
     }
 
     function renderAgeGroups() {
@@ -573,12 +633,27 @@
     }
 
     function renderAlarms() {
-      byId("alarmList").innerHTML = alarms.map((alarm, index) => `
+      const legend = `
+        <div class="alarm-legend" aria-hidden="true">
+          <span>Active</span>
+          <span>Alarm name</span>
+          <span>Time</span>
+          <span>Snooze</span>
+          <span>Volume</span>
+          <span>Days</span>
+          <span>Cancel</span>
+        </div>
+      `;
+      byId("alarmList").innerHTML = legend + alarms.map((alarm, index) => `
         <div class="alarm-row" data-index="${index}">
           <input data-field="enabled" type="checkbox" ${alarm.enabled ? "checked" : ""} aria-label="Enabled">
           <input data-field="label" type="text" maxlength="23" value="${escapeHtml(alarm.label)}" aria-label="Label">
           <input data-field="alarm_time" type="time" value="${escapeHtml(alarm.alarm_time)}" aria-label="Time">
           <input data-field="snooze_minutes" type="number" min="1" max="120" step="1" value="${alarm.snooze_minutes}" aria-label="Snooze">
+          <div class="volume-control">
+            <input data-field="volume" type="range" min="0" max="30" step="1" value="${alarm.volume}" aria-label="Volume">
+            <span>${alarm.volume}</span>
+          </div>
           <div class="day-set">
             ${days.map(([label, bit]) => `<button type="button" class="day ${(alarm.days_mask & bit) ? "active" : ""}" data-day="${bit}">${label}</button>`).join("")}
           </div>
@@ -594,14 +669,22 @@
         const alarm = alarms[Number(row.dataset.index)];
         const field = event.target.dataset.field;
         if (!alarm || !field) return;
-        alarm[field] = event.target.type === "number" ? Number(event.target.value) : event.target.value;
+        alarm[field] = event.target.type === "number" || event.target.type === "range" ? Number(event.target.value) : event.target.value;
+        if (field === "volume") {
+          const value = event.target.closest(".volume-control")?.querySelector("span");
+          if (value) value.textContent = alarm.volume;
+        }
+        renderNextAlarm();
       });
 
       byId("alarmList").addEventListener("change", (event) => {
         const row = event.target.closest(".alarm-row");
         if (!row) return;
         const alarm = alarms[Number(row.dataset.index)];
-        if (alarm && event.target.dataset.field === "enabled") alarm.enabled = event.target.checked;
+        if (alarm && event.target.dataset.field === "enabled") {
+          alarm.enabled = event.target.checked;
+          renderNextAlarm();
+        }
       });
 
       byId("alarmList").addEventListener("click", (event) => {
@@ -611,6 +694,7 @@
         if (event.target.matches("[data-remove]")) {
           alarms.splice(index, 1);
           renderAlarms();
+          renderNextAlarm();
           return;
         }
         if (event.target.matches("[data-day]")) {
@@ -618,6 +702,7 @@
           alarms[index].days_mask ^= bit;
           if (alarms[index].days_mask === 0) alarms[index].days_mask = 127;
           renderAlarms();
+          renderNextAlarm();
         }
       });
     }
@@ -625,8 +710,6 @@
     function renderSleepProfile() {
       byId("ageGroup").value = sleepProfile.age_group || "adult_18_60";
       byId("fallAsleep").value = Number(sleepProfile.time_to_fall_asleep ?? 15);
-      byId("cycleMinutes").value = Number(sleepProfile.cycle_minutes ?? 90);
-      byId("preferredCycles").value = String(sleepProfile.preferred_cycles ?? 5);
       byId("sleepEveryday").checked = sleepProfile.everyday !== false;
       byId("wakeTime").value = sleepProfile.wake_time || "07:00";
       byId("bedTime").value = sleepProfile.bed_time || "23:00";
@@ -639,8 +722,8 @@
       return {
         age_group: byId("ageGroup").value,
         time_to_fall_asleep: Number(byId("fallAsleep").value || 15),
-        cycle_minutes: Number(byId("cycleMinutes").value || 90),
-        preferred_cycles: Number(byId("preferredCycles").value || 5),
+        cycle_minutes: 90,
+        preferred_cycles: preferredCyclesForAge(byId("ageGroup").value),
         schedule_mode: scheduleMode,
         wake_time: byId("wakeTime").value || "07:00",
         bed_time: byId("bedTime").value || "23:00",
@@ -653,25 +736,27 @@
       byId("bedMode").classList.toggle("active", scheduleMode === "bed_at");
       byId("wakeTimeField").style.display = scheduleMode === "wake_at" ? "grid" : "none";
       byId("bedTimeField").style.display = scheduleMode === "bed_at" ? "grid" : "none";
+      byId("sleepNowButton").style.display = scheduleMode === "bed_at" ? "inline-flex" : "none";
     }
 
     function renderSleepResults() {
       sleepProfile = readSleepProfile();
       const group = ageGroups[sleepProfile.age_group] || ageGroups.adult_18_60;
       const [label, minHours, maxHours] = group;
-      const cycles = [3, 4, 5, 6];
+      const preferredCycleCount = preferredCyclesForAge(sleepProfile.age_group);
+      const cycles = recommendationCycles(preferredCycleCount);
       const sourceMinutes = scheduleMode === "wake_at" ? timeToMinutes(sleepProfile.wake_time) : timeToMinutes(sleepProfile.bed_time);
-      byId("sleepTarget").textContent = `${label}`;
+      byId("sleepTarget").textContent = `${label} - 90 min cycles`;
 
       byId("sleepResults").innerHTML = cycles.map((cycleCount) => {
-        const sleepMinutes = cycleCount * sleepProfile.cycle_minutes;
+        const sleepMinutes = cycleCount * 90;
         const totalHours = sleepMinutes / 60;
         const targetMinutes = scheduleMode === "wake_at"
           ? sourceMinutes - sleepProfile.time_to_fall_asleep - sleepMinutes
           : sourceMinutes + sleepProfile.time_to_fall_asleep + sleepMinutes;
         const timeValue = minutesToTime(targetMinutes);
         const inRange = totalHours >= minHours && totalHours <= maxHours;
-        const preferred = cycleCount === sleepProfile.preferred_cycles;
+        const preferred = cycleCount === preferredCycleCount;
         const labelText = scheduleMode === "wake_at" ? "Bedtime" : "Wake";
         return `
           <div class="result-row" aria-label="${labelText} ${timeValue}">
@@ -679,10 +764,64 @@
             <div class="result-meta">
               <span class="pill ${inRange ? "ok" : "warn"}">${cycleCount} cycles - ${totalHours.toFixed(1)} h${preferred ? " - Preferred" : ""}</span>
             </div>
-            <button type="button" class="primary" data-result-time="${timeValue}">${scheduleMode === "wake_at" ? "Set" : "+ Alarm"}</button>
+            <button type="button" class="primary" data-result-time="${timeValue}">Set</button>
           </div>
         `;
       }).join("");
+    }
+
+    function nextAlarmInfo(sourceAlarms = alarms) {
+      const now = new Date();
+      let best = null;
+
+      for (const alarm of sourceAlarms) {
+        if (!alarm.enabled) continue;
+
+        const [hours, minutes] = String(alarm.alarm_time || "07:00").split(":").map(Number);
+        for (let offset = 0; offset <= 7; offset += 1) {
+          const candidate = new Date(now);
+          candidate.setDate(now.getDate() + offset);
+          candidate.setHours(hours || 0, minutes || 0, 0, 0);
+
+          const dayBit = 1 << candidate.getDay();
+          if ((Number(alarm.days_mask || 127) & dayBit) === 0) continue;
+          if (candidate <= now) continue;
+
+          if (!best || candidate < best.date) {
+            best = { alarm, date: candidate };
+          }
+          break;
+        }
+      }
+
+      return best;
+    }
+
+    function renderNextAlarm(status = {}) {
+      const nextAlarm = byId("nextAlarm");
+
+      if (status.ringing) {
+        nextAlarm.textContent = "Ringing now";
+        setTone(nextAlarm, "danger");
+        return;
+      }
+
+      if (Number(status.snoozed_until_epoch || 0) > 0) {
+        nextAlarm.textContent = `Snooze ${formatEpoch(status.snoozed_until_epoch)}`;
+        setTone(nextAlarm, "warn");
+        return;
+      }
+
+      const next = nextAlarmInfo(alarms);
+      if (!next) {
+        nextAlarm.textContent = "None";
+        setTone(nextAlarm, "");
+        return;
+      }
+
+      const label = next.alarm.label ? `${next.alarm.label} ` : "";
+      nextAlarm.textContent = `${label}${next.date.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`;
+      setTone(nextAlarm, "ok");
     }
 
     function addAlarmFromSleep(timeValue) {
@@ -694,9 +833,11 @@
         enabled: true,
         alarm_time: alarmTime,
         snooze_minutes: 5,
+        volume: 20,
         days_mask: everyDay ? 127 : 62,
       }, alarms.length));
       renderAlarms();
+      renderNextAlarm();
     }
 
     async function loadSettings() {
@@ -706,6 +847,7 @@
       byId("serverTime").textContent = settings.server_iso || "--";
       renderAlarms();
       renderSleepProfile();
+      renderNextAlarm();
     }
 
     async function loadStatus() {
@@ -728,6 +870,8 @@
         setTone(alarmState, status.alarm_enabled ? "ok" : "");
       }
 
+      renderNextAlarm(status);
+
       byId("deviceTime").textContent = status.time_valid ? formatEpoch(status.device_epoch) : "Not synced";
       byId("temperature").textContent = status.environment_valid && status.temperature_c !== undefined ? `${Number(status.temperature_c).toFixed(1)} C` : "--";
       byId("humidity").textContent = status.environment_valid && status.humidity_percent !== undefined ? `${Number(status.humidity_percent).toFixed(1)} %` : "--";
@@ -747,16 +891,20 @@
       byId("message").textContent = "Saving...";
       try {
         const payload = {
-          alarms: alarms.slice(0, 8).map((alarm, index) => normalizeAlarm(alarm, index)),
+          alarms: readAlarmsFromDom().slice(0, 8).map((alarm, index) => normalizeAlarm(alarm, index)),
           sleep_profile: readSleepProfile(),
         };
-        await fetchJson("/api/alarm-settings", {
+        const saved = await fetchJson("/api/alarm-settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
         byId("message").textContent = "Saved";
-        await loadSettings();
+        alarms = (saved.alarms || payload.alarms).map(normalizeAlarm);
+        sleepProfile = saved.sleep_profile || payload.sleep_profile;
+        renderAlarms();
+        renderSleepProfile();
+        renderNextAlarm();
       } catch (error) {
         byId("message").textContent = error.message;
       } finally {
@@ -765,7 +913,7 @@
     }
 
     function bindSleepEvents() {
-      ["ageGroup", "fallAsleep", "cycleMinutes", "preferredCycles", "sleepEveryday", "wakeTime", "bedTime"].forEach((id) => {
+      ["ageGroup", "fallAsleep", "sleepEveryday", "wakeTime", "bedTime"].forEach((id) => {
         byId(id).addEventListener("input", renderSleepResults);
         byId(id).addEventListener("change", renderSleepResults);
       });
@@ -774,6 +922,13 @@
       byId("sleepResults").addEventListener("click", (event) => {
         const button = event.target.closest("[data-result-time]");
         if (button) addAlarmFromSleep(button.dataset.resultTime);
+      });
+      byId("sleepNowButton").addEventListener("click", () => {
+        const now = new Date();
+        byId("bedTime").value = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+        scheduleMode = "bed_at";
+        renderScheduleMode();
+        renderSleepResults();
       });
     }
 
@@ -784,6 +939,7 @@
       if (alarms.length >= 8) return;
       alarms.push(normalizeAlarm({ enabled: true, label: `Alarm ${alarms.length + 1}` }, alarms.length));
       renderAlarms();
+      renderNextAlarm();
     });
     byId("settingsForm").addEventListener("submit", (event) => {
       event.preventDefault();

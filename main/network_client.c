@@ -290,6 +290,7 @@ static alarm_entry_t default_alarm_entry(int index)
     alarm.hour = APP_DEFAULT_ALARM_HOUR;
     alarm.minute = APP_DEFAULT_ALARM_MINUTE;
     alarm.snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
+    alarm.volume = 20;
     alarm.days_mask = ALARM_DAYS_EVERYDAY;
     alarm.last_fired_day_key = -1;
     snprintf(alarm.label, sizeof(alarm.label), "Alarm %d", index + 1);
@@ -318,6 +319,12 @@ static bool parse_alarm_object(const char *object_json, alarm_entry_t *alarm, in
     if (json_get_int(object_json, "snooze_minutes", &snooze_minutes) &&
         snooze_minutes >= 1 && snooze_minutes <= 120) {
         parsed.snooze_minutes = snooze_minutes;
+    }
+
+    int volume = parsed.volume;
+    if (json_get_int(object_json, "volume", &volume) &&
+        volume >= 0 && volume <= 30) {
+        parsed.volume = volume;
     }
 
     int days_mask = parsed.days_mask;
@@ -391,6 +398,12 @@ static void parse_legacy_alarm_settings(const char *json, alarm_settings_t *sett
     if (json_get_int(json, "snooze_minutes", &snooze_minutes) &&
         snooze_minutes >= 1 && snooze_minutes <= 120) {
         alarm.snooze_minutes = snooze_minutes;
+    }
+
+    int volume = alarm.volume;
+    if (json_get_int(json, "volume", &volume) &&
+        volume >= 0 && volume <= 30) {
+        alarm.volume = volume;
     }
 
     settings->count = 1;
@@ -483,6 +496,7 @@ static char *build_status_json(void)
                  "\"alarm_hour\":%d,"
                  "\"alarm_minute\":%d,"
                  "\"snooze_minutes\":%d,"
+                 "\"volume\":%d,"
                  "\"ringing\":%s,"
                  "\"alarm_count\":%d,"
                  "\"active_alarm_count\":%d,"
@@ -509,6 +523,7 @@ static char *build_status_json(void)
                  status.alarm_hour,
                  status.alarm_minute,
                  status.snooze_minutes,
+                 status.volume,
                  status.ringing ? "true" : "false",
                  status.alarm_count,
                  status.active_alarm_count,
@@ -540,6 +555,7 @@ static char *build_status_json(void)
                      "\"enabled\":%s,"
                      "\"alarm_time\":\"%s\","
                      "\"snooze_minutes\":%d,"
+                     "\"volume\":%d,"
                      "\"days_mask\":%u,"
                      "\"active\":%s,"
                      "\"snoozed_until_epoch\":%lld,"
@@ -550,6 +566,7 @@ static char *build_status_json(void)
                      alarm->enabled ? "true" : "false",
                      item_time,
                      alarm->snooze_minutes,
+                     alarm->volume,
                      (unsigned)alarm->days_mask,
                      alarm->active ? "true" : "false",
                      (long long)alarm->snoozed_until_epoch,
