@@ -26,7 +26,7 @@ The page is the monitoring dashboard, alarm editor, and sleep schedule planner.
 
 Use the browser page to prepare the device settings:
 
-1. In `Alarms`, add one or more alarms, set their times, snooze durations, enabled state, and active days.
+1. In `Alarms`, add one or more alarms, set their times, snooze durations, ringtone tracks, enabled state, and active days.
 2. In `Sleep Schedule`, tune the age group, fall-asleep delay, cycle length, and preferred number of sleep cycles.
 3. Use a recommended sleep-cycle time to add an alarm, then press `Save`.
 4. Keep the page open while the ESP32 is running so it can show live status from the board.
@@ -210,6 +210,7 @@ Returns alarm settings for the device:
       "enabled": true,
       "alarm_time": "07:30",
       "snooze_minutes": 5,
+      "track": 1,
       "days_mask": 127
     }
   ],
@@ -235,8 +236,23 @@ Saves alarm settings from the dashboard or curl:
 ```sh
 curl -X POST http://localhost:8000/api/alarm-settings \
   -H 'Content-Type: application/json' \
-  -d '{"alarms":[{"id":"alarm-1","label":"Morning","enabled":true,"alarm_time":"07:30","snooze_minutes":5,"days_mask":127}]}'
+  -d '{"alarms":[{"id":"alarm-1","label":"Morning","enabled":true,"alarm_time":"07:30","snooze_minutes":5,"track":1,"days_mask":127}]}'
 ```
+
+`GET /api/tracks`
+
+Returns the browser-previewable ringtone files found in `server/tracks`. Name files with the DFPlayer track number first, for example `001-morning.mp3`, `002-bells.mp3`, or `003-radio.wav`.
+
+For the physical DFPlayer Mini SD card, put the alarm files in an `MP3` folder using four digit names:
+
+```text
+MP3/0001.mp3
+MP3/0002.mp3
+MP3/0003.mp3
+MP3/0004.mp3
+```
+
+The website preview files can have descriptive names, but the DFPlayer SD card should use the numbered `MP3/000N.mp3` names so track selection is deterministic.
 
 `GET /api/status`
 
@@ -249,8 +265,8 @@ Used by the ESP32 to upload live status, including temperature, humidity, ENS160
 ## Hardware behavior
 
 - DFPlayer Mini is controlled on UART1 with TX GPIO 17 and RX GPIO 16.
-- The alarm plays track `1` when ringing.
-- The button on GPIO 4 snoozes ringing alarms on a short click and stops active/snoozed alarms after a 2 second hold.
+- Each alarm plays its configured DFPlayer `MP3/000N.mp3` track number when ringing.
+- The button on GPIO 4 snoozes ringing alarms on one press and stops active/snoozed alarms on a second press within 2 seconds.
 - The AHT20 sensor is read on I2C SDA GPIO 21 and SCL GPIO 22.
 - The optional ENS160 air quality sensor is read on the same I2C bus at address `0x52` or `0x53`.
 

@@ -9,7 +9,7 @@
 
 static const char *TAG = "BUTTON";
 #define BUTTON_PIN GPIO_NUM_4
-#define LONG_PRESS_MS 4000
+#define DOUBLE_PRESS_MS 2000
 #define DEBOUNCE_MS 80
 #define POLL_MS 20
 
@@ -33,12 +33,17 @@ void button_task(void *pvParameters) {
     int stable_level = raw_level;
     TickType_t last_raw_change_tick = xTaskGetTickCount();
     TickType_t press_start_tick = 0;
-    bool press_snoozed = false;
-    bool long_press_handled = false;
+    TickType_t last_press_tick = 0;
+    bool alarm_stopped_on_press = false;
 
     while(1) {
         raw_level = gpio_get_level(BUTTON_PIN);
         TickType_t now_tick = xTaskGetTickCount();
+
+        if (last_press_tick != 0 &&
+            (now_tick - last_press_tick) > pdMS_TO_TICKS(DOUBLE_PRESS_MS)) {
+            last_press_tick = 0;
+        }
 
         if (raw_level != last_raw_level) {
             last_raw_level = raw_level;
@@ -52,27 +57,28 @@ void button_task(void *pvParameters) {
             // Because of the pull-up, the pin reads 0 when pressed.
             if (stable_level == 0) {
                 press_start_tick = now_tick;
-                press_snoozed = true;
-                long_press_handled = false;
-                ESP_LOGI(TAG, "Button pressed");
-                alarm_manager_snooze();
+                alarm_stopped_on_press = false;
+
+                if (last_press_tick != 0 &&
+                    (now_tick - last_press_tick) <= pdMS_TO_TICKS(DOUBLE_PRESS_MS)) {
+                    ESP_LOGI(TAG, "Button double press detected within %d ms, stopping alarm", DOUBLE_PRESS_MS);
+                    alarm_manager_stop();
+                    last_press_tick = 0;
+                    alarm_stopped_on_press = true;
+                } else {
+                    ESP_LOGI(TAG, "Button pressed, snoozing alarm");
+                    alarm_manager_snooze();
+                    last_press_tick = now_tick;
+                }
             } else if (press_start_tick != 0) {
                 uint32_t press_ms = (uint32_t)((now_tick - press_start_tick) * portTICK_PERIOD_MS);
 
                 ESP_LOGI(TAG, "Button released after %lu ms%s",
                          (unsigned long)press_ms,
-                         long_press_handled ? ", alarm stopped" : (press_snoozed ? ", alarm snoozed" : ""));
+                         alarm_stopped_on_press ? ", alarm stopped" : ", alarm snoozed");
                 press_start_tick = 0;
-                press_snoozed = false;
-                long_press_handled = false;
+                alarm_stopped_on_press = false;
             }
-        }
-
-        if (stable_level == 0 && press_start_tick != 0 && !long_press_handled &&
-            (now_tick - press_start_tick) >= pdMS_TO_TICKS(LONG_PRESS_MS)) {
-            ESP_LOGI(TAG, "Button held for %d ms, stopping alarm", LONG_PRESS_MS);
-            alarm_manager_stop();
-            long_press_handled = true;
         }
 
         vTaskDelay(pdMS_TO_TICKS(POLL_MS));

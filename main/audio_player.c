@@ -12,7 +12,8 @@ static const char *TAG = "AUDIO";
 #define DFPLAYER_TX_PIN GPIO_NUM_17
 #define DFPLAYER_RX_PIN GPIO_NUM_16
 #define DFPLAYER_DEFAULT_VOLUME 20
-#define DFPLAYER_ALARM_TRACK 1
+#define DFPLAYER_DEFAULT_ALARM_TRACK 1
+#define DFPLAYER_PLAY_MP3_FOLDER_COMMAND 0x12
 
 static void dfplayer_send_command(uint8_t command, uint16_t parameter) {
     uint8_t packet[10] = {
@@ -67,10 +68,13 @@ void audio_player_set_volume(uint8_t volume) {
     dfplayer_send_command(0x06, volume);
 }
 
-void audio_player_play_alarm(uint8_t volume) {
-    ESP_LOGI(TAG, "Playing alarm track %d at volume %u", DFPLAYER_ALARM_TRACK, (unsigned)volume);
+void audio_player_play_alarm(uint8_t volume, uint16_t track) {
+    if (track == 0) {
+        track = DFPLAYER_DEFAULT_ALARM_TRACK;
+    }
+    ESP_LOGI(TAG, "Playing MP3 folder alarm track %u at volume %u", (unsigned)track, (unsigned)volume);
     audio_player_set_volume(volume);
-    dfplayer_send_command(0x03, DFPLAYER_ALARM_TRACK);
+    dfplayer_send_command(DFPLAYER_PLAY_MP3_FOLDER_COMMAND, track);
 }
 
 void audio_player_stop(void) {
