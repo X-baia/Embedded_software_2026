@@ -20,8 +20,8 @@ static const char *TAG = "ALARM";
 static SemaphoreHandle_t s_lock;
 static alarm_status_t s_state;
 
-static void copy_text(char *dest, size_t dest_size, const char *src)
-{
+//helper functions
+static void copy_text(char *dest, size_t dest_size, const char *src) { //copies safely string avoiding program crashes, used when alarm label updated
     if (dest_size == 0) {
         return;
     }
@@ -32,13 +32,11 @@ static void copy_text(char *dest, size_t dest_size, const char *src)
     snprintf(dest, dest_size, "%s", src);
 }
 
-static bool time_is_valid(time_t now)
-{
+static bool time_is_valid(time_t now) { //check if internal clock knows a reasonable time
     return now > VALID_EPOCH_THRESHOLD;
 }
 
-static bool alarm_schedule_equal(const alarm_entry_t *left, const alarm_entry_t *right)
-{
+static bool alarm_schedule_equal(const alarm_entry_t *left, const alarm_entry_t *right) { //compares 2 alarms entries to check if they are the same, to verify if an alarm has been modifed
     return left->enabled == right->enabled &&
            left->hour == right->hour &&
            left->minute == right->minute &&
@@ -48,19 +46,16 @@ static bool alarm_schedule_equal(const alarm_entry_t *left, const alarm_entry_t 
            strcmp(left->label, right->label) == 0;
 }
 
-static int alarm_day_key(const struct tm *local_time)
-{
+static int alarm_day_key(const struct tm *local_time) { //generates key based on the exact day, to track when alarm last ringed and avoid ringing multiple times
     return (local_time->tm_year * 1000) + local_time->tm_yday;
 }
 
-static bool alarm_runs_today(const alarm_entry_t *alarm, const struct tm *local_time)
-{
+static bool alarm_runs_today(const alarm_entry_t *alarm, const struct tm *local_time) { //check if an alarm is scheduled to run today based on the days mask and current day of week
     uint8_t days_mask = alarm->days_mask == 0 ? ALARM_DAYS_EVERYDAY : alarm->days_mask;
     return (days_mask & (1U << local_time->tm_wday)) != 0;
 }
 
-static int first_relevant_alarm_index_locked(void)
-{
+static int first_relevant_alarm_index_locked(void) { //finds the primary alarm that the clock screen should show in "next alarm" section
     for (int i = 0; i < s_state.alarm_count; i++) {
         if (s_state.alarms[i].active) {
             return i;
@@ -74,8 +69,7 @@ static int first_relevant_alarm_index_locked(void)
     return s_state.alarm_count > 0 ? 0 : -1;
 }
 
-static void refresh_alarm_summary_locked(void)
-{
+static void refresh_alarm_summary_locked(void) { //updates summary fields in the state based on the current alarms, to avoid having to calculate them multiple times when showing the clock screen or responding to status requests
     int active_count = 0;
     bool any_enabled = false;
     int64_t next_snoozed_until = 0;
@@ -121,8 +115,7 @@ static void refresh_alarm_summary_locked(void)
     }
 }
 
-static alarm_entry_t normalized_alarm(const alarm_entry_t *source, int index)
-{
+static alarm_entry_t normalized_alarm(const alarm_entry_t *source, int index) { //if inputs are invalid, it rewrites them back to safe default values 
     alarm_entry_t alarm = {0};
     if (source != NULL) {
         alarm = *source;
@@ -153,22 +146,21 @@ static alarm_entry_t normalized_alarm(const alarm_entry_t *source, int index)
     return alarm;
 }
 
-static void lock_state(void)
-{
+static void lock_state(void){ //locks the state mutex, to protect concurrent access to the state from multiple tasks
     if (s_lock != NULL) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
     }
 }
 
-static void unlock_state(void)
-{
+static void unlock_state(void){ //unlocks the state mutex
     if (s_lock != NULL) {
         xSemaphoreGive(s_lock);
     }
 }
 
-void alarm_manager_init(void)
-{
+
+//functions used in other files
+void alarm_manager_init(void){ //prepares system for first use, initializing mutex, state and timezone
     s_lock = xSemaphoreCreateMutex();
     configASSERT(s_lock != NULL);
 
@@ -182,6 +174,7 @@ void alarm_manager_init(void)
 #else
         false;
 #endif
+    //default values, if no alarm configured or if internet not connected
     s_state.alarms[0].hour = APP_DEFAULT_ALARM_HOUR;
     s_state.alarms[0].minute = APP_DEFAULT_ALARM_MINUTE;
     s_state.alarms[0].snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
@@ -203,8 +196,7 @@ void alarm_manager_init(void)
              APP_TIMEZONE);
 }
 
-void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t server_epoch)
-{
+void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t server_epoch){ //synchronizes clock if server time valid, updates alarm settings.
     if (settings == NULL) {
         return;
     }
@@ -276,8 +268,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
     ESP_LOGI(TAG, "Alarm settings updated: %d alarm(s)", next_count);
 }
 
-void alarm_manager_get_settings(alarm_settings_t *out_settings)
-{
+void alarm_manager_get_settings(alarm_settings_t *out_settings){ //used by the display screen code to draw the text interface for the alarms, it copies the current alarm settings
     if (out_settings == NULL) {
         return;
     }
@@ -288,8 +279,7 @@ void alarm_manager_get_settings(alarm_settings_t *out_settings)
     unlock_state();
 }
 
-void alarm_manager_get_status(alarm_status_t *out_status)
-{
+void alarm_manager_get_status(alarm_status_t *out_status){
     if (out_status == NULL) {
         return;
     }
@@ -301,8 +291,7 @@ void alarm_manager_get_status(alarm_status_t *out_status)
     unlock_state();
 }
 
-void alarm_manager_update_environment(float temperature_c, float humidity_percent)
-{
+void alarm_manager_update_environment(float temperature_c, float humidity_percent){ //stores local physical measurements
     lock_state();
     s_state.temperature_c = temperature_c;
     s_state.humidity_percent = humidity_percent;
@@ -310,8 +299,7 @@ void alarm_manager_update_environment(float temperature_c, float humidity_percen
     unlock_state();
 }
 
-void alarm_manager_update_air_quality(bool valid, int air_quality_index, int eco2_ppm, int tvoc_ppb)
-{
+void alarm_manager_update_air_quality(bool valid, int air_quality_index, int eco2_ppm, int tvoc_ppb){ //stores local physical measurements
     lock_state();
     s_state.air_quality_valid = valid;
     s_state.air_quality_index = valid ? air_quality_index : 0;
@@ -320,22 +308,19 @@ void alarm_manager_update_air_quality(bool valid, int air_quality_index, int eco
     unlock_state();
 }
 
-void alarm_manager_mark_status_uploaded(void)
-{
+void alarm_manager_mark_status_uploaded(void){ //keeps track of the timestamp indicating when data was last uploaded to the internet.
     lock_state();
     s_state.last_status_upload_epoch = time(NULL);
     unlock_state();
 }
 
-void alarm_manager_set_error(const char *message)
-{
+void alarm_manager_set_error(const char *message){ //stores the last error message, to be shown on the clock screen if needed
     lock_state();
     copy_text(s_state.last_error, sizeof(s_state.last_error), message);
     unlock_state();
 }
 
-void alarm_manager_snooze(void)
-{
+void alarm_manager_snooze(void){ //computes when it has to ring again based on the snooze duration and current time
     bool should_stop_audio = false;
     time_t now = time(NULL);
     int64_t now_ms = esp_timer_get_time() / 1000;
@@ -369,8 +354,7 @@ void alarm_manager_snooze(void)
     }
 }
 
-void alarm_manager_stop(void)
-{
+void alarm_manager_stop(void){ //turns off all active ring or snooze states completely, resetting the clock back to tracking normal schedules.
     bool should_stop_audio = false;
 
     lock_state();
@@ -390,8 +374,7 @@ void alarm_manager_stop(void)
     }
 }
 
-void alarm_manager_task(void *pvParameters)
-{
+void alarm_manager_task(void *pvParameters){ //every second, it checks the time, calculates whether a regular alarm or snooze countdown has expired, and calls audio_player_play_alarm to start the physical speaker buzzing.
     (void)pvParameters;
 
     while (1) {
