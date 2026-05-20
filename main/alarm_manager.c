@@ -43,6 +43,7 @@ static bool alarm_schedule_equal(const alarm_entry_t *left, const alarm_entry_t 
            left->hour == right->hour &&
            left->minute == right->minute &&
            left->snooze_minutes == right->snooze_minutes &&
+           left->track == right->track &&
            left->days_mask == right->days_mask &&
            strcmp(left->label, right->label) == 0;
 }
@@ -110,11 +111,13 @@ static void refresh_alarm_summary_locked(void)
         s_state.alarm_minute = selected->minute;
         s_state.snooze_minutes = selected->snooze_minutes;
         s_state.volume = selected->volume;
+        s_state.track = selected->track;
     } else {
         s_state.alarm_hour = APP_DEFAULT_ALARM_HOUR;
         s_state.alarm_minute = APP_DEFAULT_ALARM_MINUTE;
         s_state.snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
         s_state.volume = 20;
+        s_state.track = 1;
     }
 }
 
@@ -136,6 +139,9 @@ static alarm_entry_t normalized_alarm(const alarm_entry_t *source, int index)
     }
     if (alarm.volume < 0 || alarm.volume > 30) {
         alarm.volume = 20;
+    }
+    if (alarm.track < 1 || alarm.track > 255) {
+        alarm.track = 1;
     }
     if (alarm.days_mask == 0 || (alarm.days_mask & ~ALARM_DAYS_EVERYDAY) != 0) {
         alarm.days_mask = ALARM_DAYS_EVERYDAY;
@@ -180,6 +186,7 @@ void alarm_manager_init(void)
     s_state.alarms[0].minute = APP_DEFAULT_ALARM_MINUTE;
     s_state.alarms[0].snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
     s_state.alarms[0].volume = 20;
+    s_state.alarms[0].track = 1;
     s_state.alarms[0].days_mask = ALARM_DAYS_EVERYDAY;
     s_state.alarms[0].last_fired_day_key = -1;
     copy_text(s_state.alarms[0].label, sizeof(s_state.alarms[0].label), "Alarm 1");
@@ -390,6 +397,7 @@ void alarm_manager_task(void *pvParameters)
     while (1) {
         bool should_start_audio = false;
         uint8_t play_volume = 20;
+        uint16_t play_track = 1;
         time_t now = time(NULL);
         int64_t now_ms = esp_timer_get_time() / 1000;
 
@@ -418,7 +426,8 @@ void alarm_manager_task(void *pvParameters)
                 alarm->last_alarm_epoch = s_state.time_valid ? now : 0;
                 newly_active = true;
                 play_volume = (uint8_t)alarm->volume;
-                ESP_LOGI(TAG, "Snoozed alarm '%s' ringing", alarm->label);
+                play_track = (uint16_t)alarm->track;
+                ESP_LOGI(TAG, "Snoozed alarm '%s' ringing with track %d", alarm->label, alarm->track);
                 continue;
             }
 
@@ -436,7 +445,8 @@ void alarm_manager_task(void *pvParameters)
                 alarm->last_fired_day_key = today_key;
                 newly_active = true;
                 play_volume = (uint8_t)alarm->volume;
-                ESP_LOGI(TAG, "Alarm '%s' ringing", alarm->label);
+                play_track = (uint16_t)alarm->track;
+                ESP_LOGI(TAG, "Alarm '%s' ringing with track %d", alarm->label, alarm->track);
             }
         }
 
@@ -445,7 +455,7 @@ void alarm_manager_task(void *pvParameters)
         unlock_state();
 
         if (should_start_audio) {
-            audio_player_play_alarm(play_volume);
+            audio_player_play_alarm(play_volume, play_track);
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));

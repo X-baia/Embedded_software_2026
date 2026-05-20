@@ -18,7 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -26,8 +26,10 @@ STATE_DIR = BASE_DIR / "state"
 SETTINGS_FILE = STATE_DIR / "alarm_settings.json"
 STATUS_FILE = STATE_DIR / "device_status.json"
 DASHBOARD_FILE = BASE_DIR / "dashboard.html"
+TRACKS_DIR = BASE_DIR / "tracks"
 MAX_ALARMS = 8
 ALARM_DAYS_EVERYDAY = 0x7F
+TRACK_FILE_RE = re.compile(r"^(\d{1,3})[-_\s]?.*\.(mp3|mpeg|wav|ogg|m4a)$", re.IGNORECASE)
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "alarms": [
@@ -38,6 +40,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "alarm_time": "07:00",
             "snooze_minutes": 5,
             "volume": 20,
+            "track": 1,
             "days_mask": 127,
         }
     ],
@@ -60,6 +63,7 @@ DEFAULT_STATUS: dict[str, Any] = {
     "alarm_time": "07:00",
     "snooze_minutes": 5,
     "volume": 20,
+    "track": 1,
     "ringing": False,
     "alarm_count": 0,
     "active_alarm_count": 0,
@@ -117,6 +121,10 @@ def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def ensure_tracks_dir() -> None:
+    TRACKS_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     ensure_state_dir()
     if not path.exists():
@@ -146,6 +154,36 @@ def dashboard_html() -> str:
         return DASHBOARD_FILE.read_text(encoding="utf-8")
     except OSError:
         return FALLBACK_INDEX_HTML
+
+
+def list_tracks() -> list[dict[str, Any]]:
+    ensure_tracks_dir()
+    tracks: dict[int, dict[str, Any]] = {}
+    for path in TRACKS_DIR.iterdir():
+        if not path.is_file():
+            continue
+        match = TRACK_FILE_RE.match(path.name)
+        if not match:
+            continue
+        number = int(match.group(1))
+        if number < 1 or number > 255:
+            continue
+        label_source = path.stem[len(match.group(1)):].lstrip("-_ ") or f"Track {number}"
+        for suffix in (".mp3", ".mpeg", ".wav", ".ogg", ".m4a"):
+            if label_source.lower().endswith(suffix):
+                label_source = label_source[: -len(suffix)]
+                break
+        tracks[number] = {
+            "number": number,
+            "label": label_source,
+            "file": path.name,
+            "url": f"/tracks/{quote(path.name)}",
+        }
+
+    if tracks:
+        return [tracks[number] for number in sorted(tracks)]
+
+    return [{"number": number, "label": f"Track {number}", "file": "", "url": ""} for number in range(1, 9)]
 
 
 def parse_int(value: Any, default: int, minimum: int, maximum: int, name: str) -> int:
@@ -184,6 +222,7 @@ def normalize_alarm(raw: Any, index: int, previous: dict[str, Any] | None = None
         "alarm_time": alarm_time,
         "snooze_minutes": parse_int(raw.get("snooze_minutes", 5), 5, 1, 120, "snooze_minutes"),
         "volume": parse_int(raw.get("volume", previous.get("volume", 20)), 20, 0, 30, "volume"),
+        "track": parse_int(raw.get("track", previous.get("track", 1)), 1, 1, 255, "track"),
         "days_mask": parse_int(raw.get("days_mask", ALARM_DAYS_EVERYDAY), ALARM_DAYS_EVERYDAY, 1, ALARM_DAYS_EVERYDAY, "days_mask"),
     }
 
@@ -243,6 +282,7 @@ def normalize_settings(payload: dict[str, Any], previous_settings: dict[str, Any
                     "alarm_time": payload.get("alarm_time", "07:00"),
                     "snooze_minutes": payload.get("snooze_minutes", 5),
                     "volume": payload.get("volume", 20),
+                    "track": payload.get("track", 1),
                     "days_mask": ALARM_DAYS_EVERYDAY,
                 },
                 0,
@@ -267,6 +307,7 @@ def settings_response(settings: dict[str, Any]) -> dict[str, Any]:
             "alarm_time": first_alarm["alarm_time"],
             "snooze_minutes": first_alarm["snooze_minutes"],
             "volume": first_alarm["volume"],
+            "track": first_alarm["track"],
         }
     )
     return response
@@ -310,6 +351,12 @@ class AlarmRequestHandler(BaseHTTPRequestHandler):
             payload = {"status": status}
             payload.update(now_payload())
             self.send_json(payload)
+            return
+        if path == "/api/tracks":
+            self.send_json({"tracks": list_tracks(), **now_payload()})
+            return
+        if path.startswith("/tracks/"):
+            self.send_track(path)
             return
 
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
@@ -392,6 +439,35 @@ class AlarmRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def send_track(self, path: str) -> None:
+        ensure_tracks_dir()
+        requested = Path(unquote(urlparse(path).path)).name
+        file_path = TRACKS_DIR / requested
+        try:
+            resolved = file_path.resolve(strict=True)
+            tracks_root = TRACKS_DIR.resolve(strict=True)
+        except OSError:
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Track not found")
+            return
+
+        if tracks_root not in resolved.parents or not resolved.is_file():
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Track not found")
+            return
+
+        content_type = "audio/mpeg" if resolved.suffix.lower() == ".mpeg" else mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+        try:
+            data = resolved.read_bytes()
+        except OSError:
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Track not found")
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_common_headers()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
         self.send_response(status)
@@ -412,7 +488,9 @@ def main() -> None:
     args = parser.parse_args()
 
     mimetypes.add_type("application/json", ".json")
+    mimetypes.add_type("audio/mpeg", ".mpeg")
     ensure_state_dir()
+    ensure_tracks_dir()
     with STATE_LOCK:
         save_json(SETTINGS_FILE, normalize_settings(load_json(SETTINGS_FILE, DEFAULT_SETTINGS)))
     load_json(STATUS_FILE, DEFAULT_STATUS)

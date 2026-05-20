@@ -291,6 +291,7 @@ static alarm_entry_t default_alarm_entry(int index)
     alarm.minute = APP_DEFAULT_ALARM_MINUTE;
     alarm.snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
     alarm.volume = 20;
+    alarm.track = 1;
     alarm.days_mask = ALARM_DAYS_EVERYDAY;
     alarm.last_fired_day_key = -1;
     snprintf(alarm.label, sizeof(alarm.label), "Alarm %d", index + 1);
@@ -325,6 +326,12 @@ static bool parse_alarm_object(const char *object_json, alarm_entry_t *alarm, in
     if (json_get_int(object_json, "volume", &volume) &&
         volume >= 0 && volume <= 30) {
         parsed.volume = volume;
+    }
+
+    int track = parsed.track;
+    if (json_get_int(object_json, "track", &track) &&
+        track >= 1 && track <= 255) {
+        parsed.track = track;
     }
 
     int days_mask = parsed.days_mask;
@@ -404,6 +411,12 @@ static void parse_legacy_alarm_settings(const char *json, alarm_settings_t *sett
     if (json_get_int(json, "volume", &volume) &&
         volume >= 0 && volume <= 30) {
         alarm.volume = volume;
+    }
+
+    int track = alarm.track;
+    if (json_get_int(json, "track", &track) &&
+        track >= 1 && track <= 255) {
+        alarm.track = track;
     }
 
     settings->count = 1;
@@ -497,6 +510,7 @@ static char *build_status_json(void)
                  "\"alarm_minute\":%d,"
                  "\"snooze_minutes\":%d,"
                  "\"volume\":%d,"
+                 "\"track\":%d,"
                  "\"ringing\":%s,"
                  "\"alarm_count\":%d,"
                  "\"active_alarm_count\":%d,"
@@ -524,6 +538,7 @@ static char *build_status_json(void)
                  status.alarm_minute,
                  status.snooze_minutes,
                  status.volume,
+                 status.track,
                  status.ringing ? "true" : "false",
                  status.alarm_count,
                  status.active_alarm_count,
@@ -556,6 +571,7 @@ static char *build_status_json(void)
                      "\"alarm_time\":\"%s\","
                      "\"snooze_minutes\":%d,"
                      "\"volume\":%d,"
+                     "\"track\":%d,"
                      "\"days_mask\":%u,"
                      "\"active\":%s,"
                      "\"snoozed_until_epoch\":%lld,"
@@ -567,6 +583,7 @@ static char *build_status_json(void)
                      item_time,
                      alarm->snooze_minutes,
                      alarm->volume,
+                     alarm->track,
                      (unsigned)alarm->days_mask,
                      alarm->active ? "true" : "false",
                      (long long)alarm->snoozed_until_epoch,

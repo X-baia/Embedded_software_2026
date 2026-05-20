@@ -14,6 +14,7 @@ typedef struct {
     int minute;
     int snooze_minutes;
     int volume;
+    int track;
     uint8_t days_mask;
     char label[ALARM_LABEL_SIZE];
     bool active;
@@ -35,6 +36,7 @@ typedef struct {
     int alarm_minute;
     int snooze_minutes;
     int volume;
+    int track;
     bool ringing;
     int alarm_count;
     int active_alarm_count;
