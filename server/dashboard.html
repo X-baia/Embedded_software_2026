@@ -203,6 +203,87 @@
       font-variant-numeric: tabular-nums;
     }
 
+    .comfort-panel {
+      grid-template-columns: minmax(240px, .55fr) minmax(0, 1fr);
+      align-items: start;
+    }
+
+    .comfort-ranges {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+    }
+
+    .comfort-status {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(104px, 1fr));
+      gap: 8px;
+    }
+
+    .status-light {
+      min-height: 48px;
+      padding: 6px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      background: rgba(2,0,14,.68);
+      border-color: var(--stroke-soft);
+      text-align: center;
+      cursor: default;
+    }
+
+    .status-light:hover {
+      background: rgba(2,0,14,.68);
+      border-color: var(--stroke-soft);
+    }
+
+    .status-light strong {
+      display: block;
+      color: inherit;
+      font-size: 12px;
+      line-height: 1.1;
+      overflow-wrap: anywhere;
+    }
+
+    .status-light.hot,
+    .status-light.bad {
+      color: #fff5f7;
+      background: #b91c1c;
+      border-color: #ef4444;
+      box-shadow: inset 0 0 0 1px rgba(243,244,255,.14);
+    }
+
+    .status-light.cold {
+      color: #ecfeff;
+      background: #0e7490;
+      border-color: #67e8f9;
+      box-shadow: inset 0 0 0 1px rgba(236,254,255,.16);
+    }
+
+    .status-light.caution {
+      color: #1a1200;
+      background: #facc15;
+      border-color: #fde047;
+      box-shadow: inset 0 0 0 1px rgba(26,18,0,.12);
+    }
+
+    .status-light.hot:hover,
+    .status-light.bad:hover {
+      background: #b91c1c;
+      border-color: #ef4444;
+    }
+
+    .status-light.cold:hover {
+      background: #0e7490;
+      border-color: #67e8f9;
+    }
+
+    .status-light.caution:hover {
+      background: #facc15;
+      border-color: #fde047;
+    }
+
     .ok { color: var(--ok); }
     .warn { color: var(--warn); }
     .danger { color: var(--danger); }
@@ -461,6 +542,8 @@
     @media (max-width: 1180px) {
       .dashboard-grid { grid-template-columns: 1fr; }
       .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .comfort-panel { grid-template-columns: 1fr; }
+      .comfort-status { grid-template-columns: repeat(3, minmax(104px, 1fr)); }
       .alarm-legend {
         grid-template-columns: 44px minmax(160px, 1fr) 96px 86px 52px;
         grid-template-areas:
@@ -480,6 +563,8 @@
       main { width: min(100vw - 18px, 1220px); padding-top: 14px; }
       header { align-items: start; flex-direction: column; min-height: auto; }
       .form-grid { grid-template-columns: 1fr; }
+      .comfort-ranges,
+      .comfort-status { grid-template-columns: 1fr; }
       .alarm-legend { display: none; }
       .alarm-row {
         grid-template-columns: 22px minmax(0, 1fr) 42px;
@@ -520,6 +605,39 @@
         <div class="metric"><div class="metric-label">Clock</div><div id="deviceTime" class="metric-value">--</div></div>
         <div class="metric"><div class="metric-label">Alarm</div><div id="alarmState" class="metric-value">--</div></div>
         <div class="metric"><div class="metric-label">Next Alarm</div><div id="nextAlarm" class="metric-value">--</div></div>
+      </div>
+    </section>
+
+    <section class="glass panel comfort-panel">
+      <div>
+        <div class="panel-head">
+          <h2>Room Comfort</h2>
+          <span id="comfortRange" class="pill">18-26 C</span>
+        </div>
+        <div class="comfort-ranges">
+          <label>
+            Minimum temperature
+            <input id="minTemperature" type="number" min="-20" max="60" step="0.5">
+          </label>
+          <label>
+            Maximum temperature
+            <input id="maxTemperature" type="number" min="-20" max="60" step="0.5">
+          </label>
+        </div>
+      </div>
+      <div class="comfort-status" aria-label="Room comfort alerts">
+        <button id="tooColdAlert" class="status-light" type="button" aria-pressed="false">
+          <strong>Too cold</strong>
+        </button>
+        <button id="tooHotAlert" class="status-light" type="button" aria-pressed="false">
+          <strong>Too hot</strong>
+        </button>
+        <button id="badAirAlert" class="status-light" type="button" aria-pressed="false">
+          <strong>Bad air</strong>
+        </button>
+        <button id="humidityAlert" class="status-light" type="button" aria-pressed="false">
+          <strong>Humidity</strong>
+        </button>
       </div>
     </section>
 
@@ -600,6 +718,15 @@
       label: `Track ${index + 1}`,
       url: "",
     }));
+    const comfortDefaults = {
+      minTemperature: 18,
+      maxTemperature: 26,
+    };
+    const comfortLimits = {
+      minHumidity: 30,
+      maxHumidity: 65,
+      warnAirQuality: 3,
+    };
 
     let alarms = [];
     let tracks = fallbackTracks;
@@ -607,6 +734,7 @@
     let scheduleMode = "wake_at";
     let previewAudio = null;
     let previewStopTimer = null;
+    let lastStatus = {};
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -635,6 +763,66 @@
 
     function setTone(el, tone) {
       el.className = `metric-value${tone ? " " + tone : ""}`;
+    }
+
+    function readComfortSettings() {
+      const storedMin = Number(localStorage.getItem("comfortMinTemperature"));
+      const storedMax = Number(localStorage.getItem("comfortMaxTemperature"));
+      let minTemperature = Number.isFinite(storedMin) ? storedMin : comfortDefaults.minTemperature;
+      let maxTemperature = Number.isFinite(storedMax) ? storedMax : comfortDefaults.maxTemperature;
+
+      if (minTemperature > maxTemperature) {
+        [minTemperature, maxTemperature] = [maxTemperature, minTemperature];
+      }
+
+      return { minTemperature, maxTemperature };
+    }
+
+    function writeComfortSettings() {
+      const minTemperature = Number(byId("minTemperature").value);
+      const maxTemperature = Number(byId("maxTemperature").value);
+      if (!Number.isFinite(minTemperature) || !Number.isFinite(maxTemperature)) return;
+      localStorage.setItem("comfortMinTemperature", String(minTemperature));
+      localStorage.setItem("comfortMaxTemperature", String(maxTemperature));
+      renderComfortStatus(lastStatus);
+    }
+
+    function initComfortSettings() {
+      const settings = readComfortSettings();
+      byId("minTemperature").value = settings.minTemperature;
+      byId("maxTemperature").value = settings.maxTemperature;
+      ["minTemperature", "maxTemperature"].forEach((id) => {
+        byId(id).addEventListener("input", writeComfortSettings);
+        byId(id).addEventListener("change", writeComfortSettings);
+      });
+      renderComfortStatus({});
+    }
+
+    function setAlert(id, tone = "") {
+      const alert = byId(id);
+      alert.classList.toggle("hot", tone === "hot");
+      alert.classList.toggle("cold", tone === "cold");
+      alert.classList.toggle("bad", tone === "bad");
+      alert.classList.toggle("caution", tone === "caution");
+      alert.setAttribute("aria-pressed", tone ? "true" : "false");
+    }
+
+    function renderComfortStatus(status = {}) {
+      const { minTemperature, maxTemperature } = readComfortSettings();
+      byId("comfortRange").textContent = `${minTemperature.toFixed(1)}-${maxTemperature.toFixed(1)} C`;
+
+      const hasTemperature = status.environment_valid && Number.isFinite(Number(status.temperature_c));
+      const temperature = Number(status.temperature_c);
+      setAlert("tooColdAlert", hasTemperature && temperature < minTemperature ? "cold" : "");
+      setAlert("tooHotAlert", hasTemperature && temperature > maxTemperature ? "hot" : "");
+
+      const hasHumidity = status.environment_valid && Number.isFinite(Number(status.humidity_percent));
+      const humidity = Number(status.humidity_percent);
+      setAlert("humidityAlert", hasHumidity && humidity > comfortLimits.maxHumidity ? "hot" : hasHumidity && humidity < comfortLimits.minHumidity ? "cold" : "");
+
+      const aqi = Number(status.air_quality_index || 0);
+      const hasAirQuality = status.air_quality_valid && aqi > 0;
+      setAlert("badAirAlert", hasAirQuality && aqi > comfortLimits.warnAirQuality ? "bad" : hasAirQuality && aqi === comfortLimits.warnAirQuality ? "caution" : "");
     }
 
     async function fetchJson(url, options) {
@@ -1014,6 +1202,7 @@
     async function loadStatus() {
       const payload = await fetchJson("/api/status");
       const status = payload.status || {};
+      lastStatus = status;
       byId("serverTime").textContent = payload.server_iso || "--";
       byId("deviceId").textContent = status.device_id || "--";
 
@@ -1043,6 +1232,7 @@
       setTone(airQuality, aqi >= 4 ? "danger" : aqi === 3 ? "warn" : aqi > 0 ? "ok" : "");
       byId("airChemistry").textContent = status.air_quality_valid ? `${Number(status.tvoc_ppb || 0)} ppb / ${Number(status.eco2_ppm || 0)} ppm` : "--";
 
+      renderComfortStatus(status);
       byId("syncState").textContent = status.received_at ? `Updated ${status.received_at}` : "Waiting";
     }
 
@@ -1094,6 +1284,7 @@
     }
 
     renderAgeGroups();
+    initComfortSettings();
     bindAlarmEvents();
     bindSleepEvents();
     byId("addAlarmButton").addEventListener("click", () => {
