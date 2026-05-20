@@ -4,9 +4,9 @@
 #include <stdint.h>
 #include <time.h>
 
-#define ALARM_MAX_COUNT 8
-#define ALARM_LABEL_SIZE 24
-#define ALARM_DAYS_EVERYDAY 0x7f
+#define ALARM_MAX_COUNT 8 //maximum number of alarms set
+#define ALARM_LABEL_SIZE 24 //maxmimum number of characters for the alarm label
+#define ALARM_DAYS_EVERYDAY 0x7f //bitmask for days of the week, in this way they are all selected (as default the alarm is set to ring every day)
 
 typedef struct {
     bool enabled;
