@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Local-only smart alarm dashboard and API.
-
-This server intentionally uses only the Python standard library so the project
-can be run and tested on a LAN without internet access or package installs.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -20,17 +14,21 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
 
-
+#directories and defaults
 BASE_DIR = Path(__file__).resolve().parent
 STATE_DIR = BASE_DIR / "state"
 SETTINGS_FILE = STATE_DIR / "alarm_settings.json"
 STATUS_FILE = STATE_DIR / "device_status.json"
 DASHBOARD_FILE = BASE_DIR / "dashboard.html"
 TRACKS_DIR = BASE_DIR / "tracks"
+CSS_DIR = BASE_DIR / "style.css"
+SCRIPT_DIR = BASE_DIR / "script.js"
 MAX_ALARMS = 8
 ALARM_DAYS_EVERYDAY = 0x7F
-TRACK_FILE_RE = re.compile(r"^(\d{1,3})[-_\s]?.*\.(mp3|mpeg|wav|ogg|m4a)$", re.IGNORECASE)
+#looks for audio that starts with a 1 to 3 digit number and has one of those extensions
+TRACK_FILE_RE = re.compile(r"^(\d{1,3})[-_\s]?.*\.(mp3|mpeg|wav|ogg|m4a)$", re.IGNORECASE) 
 
+#default settings of gui
 DEFAULT_SETTINGS: dict[str, Any] = {
     "alarms": [
         {
@@ -76,10 +74,11 @@ DEFAULT_STATUS: dict[str, Any] = {
     "tvoc_ppb": 0,
     "last_error": "No device status received yet",
 }
-
+#validattes if the string has a valid HH:HH format
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 STATE_LOCK = threading.Lock()
 
+#setting up how many hours a person should sleep based on the age group
 AGE_SLEEP_HOURS: dict[str, tuple[int, int]] = {
     "newborn": (14, 17),
     "infant": (12, 16),
@@ -116,15 +115,13 @@ def now_payload() -> dict[str, Any]:
         "server_iso": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
     }
 
-
 def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-
 
 def ensure_tracks_dir() -> None:
     TRACKS_DIR.mkdir(parents=True, exist_ok=True)
 
-
+#functions to load and save json data for settings and status, with error handling and defaults
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     ensure_state_dir()
     if not path.exists():
@@ -139,7 +136,6 @@ def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
         pass
     return dict(default)
 
-
 def save_json(path: Path, data: dict[str, Any]) -> None:
     ensure_state_dir()
     temp_path = path.with_suffix(path.suffix + ".tmp")
@@ -148,14 +144,14 @@ def save_json(path: Path, data: dict[str, Any]) -> None:
         file.write("\n")
     os.replace(temp_path, path)
 
-
+#function to read the dashboard HTML file
 def dashboard_html() -> str:
     try:
         return DASHBOARD_FILE.read_text(encoding="utf-8")
     except OSError:
         return FALLBACK_INDEX_HTML
 
-
+#function to list available tracks in the tracks directory, extracting track number and label from filenames
 def list_tracks() -> list[dict[str, Any]]:
     ensure_tracks_dir()
     tracks: dict[int, dict[str, Any]] = {}
@@ -179,12 +175,10 @@ def list_tracks() -> list[dict[str, Any]]:
             "file": path.name,
             "url": f"/tracks/{quote(path.name)}",
         }
-
     if tracks:
         return [tracks[number] for number in sorted(tracks)]
 
     return [{"number": number, "label": f"Track {number}", "file": "", "url": ""} for number in range(1, 9)]
-
 
 def parse_int(value: Any, default: int, minimum: int, maximum: int, name: str) -> int:
     try:
@@ -195,13 +189,12 @@ def parse_int(value: Any, default: int, minimum: int, maximum: int, name: str) -
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return parsed
 
-
 def preferred_cycles_for_age(age_group: str) -> int:
     min_hours, max_hours = AGE_SLEEP_HOURS.get(age_group, AGE_SLEEP_HOURS["adult_18_60"])
     midpoint_minutes = ((min_hours + max_hours) / 2) * 60
     return max(3, min(12, round(midpoint_minutes / 90)))
 
-
+#functions to noralize to defaults, ensuring correcting formats are used
 def normalize_alarm(raw: Any, index: int, previous: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("Each alarm must be an object")
@@ -225,7 +218,6 @@ def normalize_alarm(raw: Any, index: int, previous: dict[str, Any] | None = None
         "track": parse_int(raw.get("track", previous.get("track", 1)), 1, 1, 255, "track"),
         "days_mask": parse_int(raw.get("days_mask", ALARM_DAYS_EVERYDAY), ALARM_DAYS_EVERYDAY, 1, ALARM_DAYS_EVERYDAY, "days_mask"),
     }
-
 
 def normalize_sleep_profile(raw: Any) -> dict[str, Any]:
     default = DEFAULT_SETTINGS["sleep_profile"]
@@ -253,7 +245,6 @@ def normalize_sleep_profile(raw: Any) -> dict[str, Any]:
         "bed_time": bed_time,
         "everyday": bool(raw.get("everyday", default["everyday"])),
     }
-
 
 def normalize_settings(payload: dict[str, Any], previous_settings: dict[str, Any] | None = None) -> dict[str, Any]:
     previous_alarms = []
@@ -297,7 +288,6 @@ def normalize_settings(payload: dict[str, Any], previous_settings: dict[str, Any
         normalized["updated_at"] = payload["updated_at"]
     return normalized
 
-
 def settings_response(settings: dict[str, Any]) -> dict[str, Any]:
     response = normalize_settings(settings)
     first_alarm = response["alarms"][0] if response["alarms"] else normalize_alarm(DEFAULT_SETTINGS["alarms"][0], 0)
@@ -312,7 +302,7 @@ def settings_response(settings: dict[str, Any]) -> dict[str, Any]:
     )
     return response
 
-
+#ensures incoming settings are valid
 def validate_settings(payload: dict[str, Any], previous_settings: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = normalize_settings(payload, previous_settings)
     settings.update(
@@ -339,6 +329,12 @@ class AlarmRequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             self.send_html(dashboard_html())
             return
+        if path == "/style.css":
+            self.send_css(CSS_DIR)
+            return
+        if path == "/script.js":
+            self.send_script(SCRIPT_DIR)
+            return
         if path == "/api/alarm-settings":
             with STATE_LOCK:
                 settings = settings_response(load_json(SETTINGS_FILE, DEFAULT_SETTINGS))
@@ -361,6 +357,7 @@ class AlarmRequestHandler(BaseHTTPRequestHandler):
 
         self.send_error_json(HTTPStatus.NOT_FOUND, "Not found")
 
+    #handles incoming status updates from the device, validating and saving them
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         if path == "/api/alarm-settings":
@@ -408,6 +405,7 @@ class AlarmRequestHandler(BaseHTTPRequestHandler):
 
         self.send_json({"ok": True, **now_payload()})
 
+    #reads and parses JSON body from incoming POST requests
     def read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
@@ -424,6 +422,7 @@ class AlarmRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("JSON body must be an object")
         return payload
 
+    # Sends common HTTP headers for all responses
     def send_common_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -438,6 +437,30 @@ class AlarmRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def send_css(self, path: Path) -> None:
+        try:
+            css_content = (CSS_DIR).read_text(encoding="utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_common_headers()
+            self.send_header("Content-Type", "text/css; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(css_content.encode("utf-8"))
+        except OSError:
+            self.send_error_json(HTTPStatus.NOT_FOUND, "CSS file not found")
+            return
+
+    def send_script(self, path: Path) -> None:
+        try:
+            script_content = (SCRIPT_DIR).read_text(encoding="utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_common_headers()
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(script_content.encode("utf-8"))
+        except OSError:
+            self.send_error_json(HTTPStatus.NOT_FOUND, "Script file not found")
+            return
 
     def send_track(self, path: str) -> None:
         ensure_tracks_dir()
@@ -480,7 +503,7 @@ class AlarmRequestHandler(BaseHTTPRequestHandler):
     def send_error_json(self, status: HTTPStatus, message: str) -> None:
         self.send_json({"error": message, **now_payload()}, status)
 
-
+#set ups the server and web app
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local smart alarm dashboard/API.")
     parser.add_argument("--host", default="0.0.0.0", help="Host/interface to bind")
