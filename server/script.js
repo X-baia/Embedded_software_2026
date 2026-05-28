@@ -1,4 +1,5 @@
 const byId = (id) => document.getElementById(id);
+    //defaults
     const days = [
       ["S", 1 << 0], ["M", 1 << 1], ["T", 1 << 2], ["W", 1 << 3],
       ["T", 1 << 4], ["F", 1 << 5], ["S", 1 << 6],
