@@ -25,7 +25,8 @@ CSS_DIR = BASE_DIR / "style.css"
 SCRIPT_DIR = BASE_DIR / "script.js"
 MAX_ALARMS = 8
 ALARM_DAYS_EVERYDAY = 0x7F
-TRACK_FILE_RE = re.compile(r"^(\d{1,3})[-_\s]?.*\.(mp3|mpeg|wav|ogg|m4a)$", re.IGNORECASE)
+#looks for audio that starts with a 1 to 3 digit number and has one of those extensions
+TRACK_FILE_RE = re.compile(r"^(\d{1,3})[-_\s]?.*\.(mp3|mpeg|wav|ogg|m4a)$", re.IGNORECASE) 
 
 #default settings of gui
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -73,7 +74,7 @@ DEFAULT_STATUS: dict[str, Any] = {
     "tvoc_ppb": 0,
     "last_error": "No device status received yet",
 }
-
+#validattes if the string has a valid HH:HH format
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 STATE_LOCK = threading.Lock()
 
