@@ -33,9 +33,11 @@ const byId = (id) => document.getElementById(id);
     let alarms = [];
     let tracks = fallbackTracks;
     let sleepProfile = {};
+    let savedSettings = null;
     let scheduleMode = "wake_at";
     let previewAudio = null;
     let previewStopTimer = null;
+    let comfortSaveTimer = null;
     let lastStatus = {};
 
     function escapeHtml(value) {
@@ -80,6 +82,29 @@ const byId = (id) => document.getElementById(id);
       return { minTemperature, maxTemperature };
     }
 
+    function applyComfortSettings(settings = {}) {
+      // The dashboard should always fall back to the last known safe range if the server does not send one yet.
+      const fallback = readComfortSettings();
+      let minTemperature = Number(settings.comfort_min_temperature);
+      let maxTemperature = Number(settings.comfort_max_temperature);
+
+      if (!Number.isFinite(minTemperature)) {
+        minTemperature = fallback.minTemperature;
+      }
+      if (!Number.isFinite(maxTemperature)) {
+        maxTemperature = fallback.maxTemperature;
+      }
+      if (minTemperature > maxTemperature) {
+        [minTemperature, maxTemperature] = [maxTemperature, minTemperature];
+      }
+
+      byId("minTemperature").value = minTemperature;
+      byId("maxTemperature").value = maxTemperature;
+      localStorage.setItem("comfortMinTemperature", String(minTemperature));
+      localStorage.setItem("comfortMaxTemperature", String(maxTemperature));
+      renderComfortStatus(lastStatus);
+    }
+
     function writeComfortSettings() {
       const minTemperature = Number(byId("minTemperature").value);
       const maxTemperature = Number(byId("maxTemperature").value);
@@ -87,6 +112,45 @@ const byId = (id) => document.getElementById(id);
       localStorage.setItem("comfortMinTemperature", String(minTemperature));
       localStorage.setItem("comfortMaxTemperature", String(maxTemperature));
       renderComfortStatus(lastStatus);
+      scheduleComfortSave();
+    }
+
+    function scheduleComfortSave() {
+      // A tiny debounce keeps the page from spamming the API while the user is typing numbers.
+      if (!savedSettings) {
+        return;
+      }
+      if (comfortSaveTimer) {
+        clearTimeout(comfortSaveTimer);
+      }
+      comfortSaveTimer = setTimeout(() => {
+        comfortSaveTimer = null;
+        saveComfortSettings().catch(() => {});
+      }, 400);
+    }
+
+    async function saveComfortSettings() {
+      // Comfort settings are saved separately so changing the temperature range does not overwrite pending alarm edits.
+      if (!savedSettings) {
+        return;
+      }
+
+      const { minTemperature, maxTemperature } = readComfortSettings();
+      const payload = {
+        alarms: savedSettings.alarms || [],
+        sleep_profile: savedSettings.sleep_profile || {},
+        comfort_min_temperature: minTemperature,
+        comfort_max_temperature: maxTemperature,
+      };
+
+      const saved = await fetchJson("/api/alarm-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      savedSettings = saved;
+      applyComfortSettings(saved);
     }
 
     function initComfortSettings() {
@@ -110,7 +174,16 @@ const byId = (id) => document.getElementById(id);
     }
 
     function renderComfortStatus(status = {}) {
-      const { minTemperature, maxTemperature } = readComfortSettings();
+      const statusMin = Number(status.comfort_min_temperature);
+      const statusMax = Number(status.comfort_max_temperature);
+      const rangeFromStatus = Number.isFinite(statusMin) && Number.isFinite(statusMax);
+      let minTemperature = rangeFromStatus ? statusMin : readComfortSettings().minTemperature;
+      let maxTemperature = rangeFromStatus ? statusMax : readComfortSettings().maxTemperature;
+
+      if (minTemperature > maxTemperature) {
+        [minTemperature, maxTemperature] = [maxTemperature, minTemperature];
+      }
+
       byId("comfortRange").textContent = `${minTemperature.toFixed(1)}-${maxTemperature.toFixed(1)} C`;
 
       const hasTemperature = status.environment_valid && Number.isFinite(Number(status.temperature_c));
@@ -442,6 +515,31 @@ const byId = (id) => document.getElementById(id);
       return best;
     }
 
+    function nextSnoozeInfo(status = {}) {
+      let best = null;
+      const statusAlarms = Array.isArray(status.alarms) ? status.alarms : [];
+
+      for (const alarm of statusAlarms) {
+        const epoch = Number(alarm.snoozed_until_epoch || 0);
+        if (epoch <= 0) continue;
+
+        const date = new Date(epoch * 1000);
+        if (!best || date < best.date) {
+          best = { alarm, date };
+        }
+      }
+
+      const summaryEpoch = Number(status.snoozed_until_epoch || 0);
+      if (summaryEpoch > 0) {
+        const date = new Date(summaryEpoch * 1000);
+        if (!best || date < best.date) {
+          best = { alarm: null, date };
+        }
+      }
+
+      return best;
+    }
+
     function renderNextAlarm(status = {}) {
       const nextAlarm = byId("nextAlarm");
 
@@ -451,13 +549,16 @@ const byId = (id) => document.getElementById(id);
         return;
       }
 
-      if (Number(status.snoozed_until_epoch || 0) > 0) {
-        nextAlarm.textContent = `Snooze ${formatEpoch(status.snoozed_until_epoch)}`;
+      const snooze = nextSnoozeInfo(status);
+      const next = nextAlarmInfo(alarms);
+
+      if (snooze && (!next || snooze.date < next.date)) {
+        const label = snooze.alarm?.label ? `${snooze.alarm.label} ` : "";
+        nextAlarm.textContent = `${label}Snooze ${snooze.date.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`;
         setTone(nextAlarm, "warn");
         return;
       }
 
-      const next = nextAlarmInfo(alarms);
       if (!next) {
         nextAlarm.textContent = "None";
         setTone(nextAlarm, "");
@@ -493,9 +594,11 @@ const byId = (id) => document.getElementById(id);
 
     async function loadSettings() {
       const settings = await fetchJson("/api/alarm-settings");
+      savedSettings = settings;
       alarms = (settings.alarms || []).map(normalizeAlarm);
       sleepProfile = settings.sleep_profile || {};
       byId("serverTime").textContent = settings.server_iso || "--";
+      applyComfortSettings(settings);
       renderAlarms();
       renderSleepProfile();
       renderNextAlarm();
@@ -546,6 +649,8 @@ const byId = (id) => document.getElementById(id);
         const payload = {
           alarms: readAlarmsFromDom().slice(0, 8).map((alarm, index) => normalizeAlarm(alarm, index)),
           sleep_profile: readSleepProfile(),
+          comfort_min_temperature: readComfortSettings().minTemperature,
+          comfort_max_temperature: readComfortSettings().maxTemperature,
         };
         const saved = await fetchJson("/api/alarm-settings", {
           method: "POST",
@@ -553,8 +658,10 @@ const byId = (id) => document.getElementById(id);
           body: JSON.stringify(payload),
         });
         byId("message").textContent = "Saved";
+        savedSettings = saved;
         alarms = (saved.alarms || payload.alarms).map(normalizeAlarm);
         sleepProfile = saved.sleep_profile || payload.sleep_profile;
+        applyComfortSettings(saved);
         renderAlarms();
         renderSleepProfile();
         renderNextAlarm();

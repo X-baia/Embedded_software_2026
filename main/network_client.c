@@ -137,6 +137,23 @@ static bool json_get_epoch(const char *json, const char *key, time_t *out_value)
     return true;
 }
 
+static bool json_get_float(const char *json, const char *key, float *out_value)
+{
+    const char *value = find_json_value(json, key);
+    if (value == NULL || out_value == NULL) {
+        return false;
+    }
+
+    char *end = NULL;
+    float parsed = strtof(value, &end);
+    if (end == value) {
+        return false;
+    }
+
+    *out_value = parsed;
+    return true;
+}
+
 static bool json_get_string(const char *json, const char *key, char *out_value, size_t out_size)
 {
     const char *value = find_json_value(json, key);
@@ -423,6 +440,34 @@ static void parse_legacy_alarm_settings(const char *json, alarm_settings_t *sett
     settings->alarms[0] = alarm;
 }
 
+static void parse_comfort_settings(const char *json, alarm_settings_t *settings)
+{
+    if (json == NULL || settings == NULL) {
+        return;
+    }
+
+    // The device keeps the last valid comfort range so the dashboard can update one bound at a time.
+    float min_temperature = settings->comfort_min_temperature;
+    float max_temperature = settings->comfort_max_temperature;
+
+    if (json_get_float(json, "comfort_min_temperature", &min_temperature) &&
+        (min_temperature < -20.0f || min_temperature > 60.0f)) {
+        min_temperature = 18.0f;
+    }
+    if (json_get_float(json, "comfort_max_temperature", &max_temperature) &&
+        (max_temperature < -20.0f || max_temperature > 60.0f)) {
+        max_temperature = 26.0f;
+    }
+    if (min_temperature > max_temperature) {
+        float temp = min_temperature;
+        min_temperature = max_temperature;
+        max_temperature = temp;
+    }
+
+    settings->comfort_min_temperature = min_temperature;
+    settings->comfort_max_temperature = max_temperature;
+}
+
 static esp_err_t fetch_alarm_settings(void)
 {
     char url[HTTP_URL_BUFFER_SIZE];
@@ -470,6 +515,7 @@ static esp_err_t fetch_alarm_settings(void)
     if (!parse_alarms_array(response.data, &settings)) {
         parse_legacy_alarm_settings(response.data, &settings);
     }
+    parse_comfort_settings(response.data, &settings);
 
     time_t server_epoch = 0;
     json_get_epoch(response.data, "server_epoch", &server_epoch);
@@ -514,6 +560,8 @@ static char *build_status_json(void)
                  "\"ringing\":%s,"
                  "\"alarm_count\":%d,"
                  "\"active_alarm_count\":%d,"
+                 "\"comfort_min_temperature\":%.2f,"
+                 "\"comfort_max_temperature\":%.2f,"
                  "\"snoozed_until_epoch\":%lld,"
                  "\"last_alarm_epoch\":%lld,"
                  "\"last_settings_sync_epoch\":%lld,"
@@ -542,6 +590,8 @@ static char *build_status_json(void)
                  status.ringing ? "true" : "false",
                  status.alarm_count,
                  status.active_alarm_count,
+                 status.comfort_min_temperature,
+                 status.comfort_max_temperature,
                  (long long)status.snoozed_until_epoch,
                  (long long)status.last_alarm_epoch,
                  (long long)status.last_settings_sync_epoch,

@@ -16,9 +16,24 @@
 static const char *TAG = "ALARM";
 
 #define VALID_EPOCH_THRESHOLD 1600000000
+#define DEFAULT_COMFORT_MIN_TEMPERATURE 18.0f
+#define DEFAULT_COMFORT_MAX_TEMPERATURE 26.0f
+#define COMFORT_ALERT_AQI_THRESHOLD 3
+#define COMFORT_ALERT_TRACK 5
+#define COMFORT_ALERT_DURATION_MS 5000
+#define COMFORT_ALERT_REPEAT_INTERVAL_MS (30 * 60 * 1000)
+#define ALARM_RING_TIMEOUT_MS 60000
 
 static SemaphoreHandle_t s_lock;
 static alarm_status_t s_state;
+static bool s_audio_is_playing;
+static uint8_t s_audio_volume;
+static uint16_t s_audio_track;
+static bool s_comfort_alert_active;
+static int64_t s_comfort_alert_until_uptime_ms;
+static int64_t s_next_comfort_alert_check_uptime_ms;
+
+static int oldest_active_alarm_index_locked(void);
 
 //helper functions
 static void copy_text(char *dest, size_t dest_size, const char *src) { //copies safely string avoiding program crashes, used when alarm label updated
@@ -55,12 +70,130 @@ static bool alarm_runs_today(const alarm_entry_t *alarm, const struct tm *local_
     return (days_mask & (1U << local_time->tm_wday)) != 0;
 }
 
-static int first_relevant_alarm_index_locked(void) { //finds the primary alarm that the clock screen should show in "next alarm" section
-    for (int i = 0; i < s_state.alarm_count; i++) {
-        if (s_state.alarms[i].active) {
-            return i;
+static void normalize_comfort_range(float *min_temperature, float *max_temperature) { //keeps the selected comfort range inside the same limits used by the web dashboard
+    if (min_temperature == NULL || max_temperature == NULL) {
+        return;
+    }
+
+    if (*min_temperature < -20.0f || *min_temperature > 60.0f) {
+        *min_temperature = DEFAULT_COMFORT_MIN_TEMPERATURE;
+    }
+    if (*max_temperature < -20.0f || *max_temperature > 60.0f) {
+        *max_temperature = DEFAULT_COMFORT_MAX_TEMPERATURE;
+    }
+    if (*min_temperature > *max_temperature) {
+        float tmp = *min_temperature;
+        *min_temperature = *max_temperature;
+        *max_temperature = tmp;
+    }
+}
+
+static bool comfort_condition_active_locked(void) { //checks whether the current sensor values are outside the user comfort range
+    bool temperature_outside_range = s_state.environment_valid &&
+                                     (s_state.temperature_c < s_state.comfort_min_temperature ||
+                                      s_state.temperature_c > s_state.comfort_max_temperature);
+    bool air_quality_bad = s_state.air_quality_valid && s_state.air_quality_index > COMFORT_ALERT_AQI_THRESHOLD;
+    return temperature_outside_range || air_quality_bad;
+}
+
+static void expire_comfort_alert_locked(int64_t now_ms) { //clears the alert once its five-second playback window has finished
+    if (s_comfort_alert_active && now_ms >= s_comfort_alert_until_uptime_ms) {
+        s_comfort_alert_active = false;
+        s_comfort_alert_until_uptime_ms = 0;
+    }
+}
+
+static void maybe_start_comfort_alert_locked(int64_t now_ms) { //starts a short alert, then waits 30 minutes before rechecking persistent bad conditions
+    bool condition_active = comfort_condition_active_locked();
+    if (!condition_active) {
+        s_next_comfort_alert_check_uptime_ms = 0;
+        return;
+    }
+
+    if (!s_comfort_alert_active &&
+        (s_next_comfort_alert_check_uptime_ms == 0 || now_ms >= s_next_comfort_alert_check_uptime_ms)) {
+        s_comfort_alert_active = true;
+        s_comfort_alert_until_uptime_ms = now_ms + COMFORT_ALERT_DURATION_MS;
+        s_next_comfort_alert_check_uptime_ms = now_ms + COMFORT_ALERT_REPEAT_INTERVAL_MS;
+        ESP_LOGI(TAG, "Comfort alert triggered");
+    }
+}
+
+static void resolve_audio_output_locked(time_t now, int64_t now_ms, bool *should_stop_audio, bool *should_play_audio, uint8_t *play_volume, uint16_t *play_track) { //keeps the DFPlayer aligned with the current alarm or comfort alert that should be audible
+    (void)now;
+
+    if (should_stop_audio == NULL || should_play_audio == NULL || play_volume == NULL || play_track == NULL) {
+        return;
+    }
+
+    *should_stop_audio = false;
+    *should_play_audio = false;
+    *play_volume = 20;
+    *play_track = 1;
+
+    uint8_t desired_volume = 0;
+    uint16_t desired_track = 0;
+    bool desired_audio = false;
+
+    if (s_comfort_alert_active && now_ms < s_comfort_alert_until_uptime_ms) {
+        desired_audio = true;
+        desired_volume = 20;
+        desired_track = COMFORT_ALERT_TRACK;
+    } else {
+        int alarm_index = oldest_active_alarm_index_locked();
+        if (alarm_index >= 0) {
+            const alarm_entry_t *alarm = &s_state.alarms[alarm_index];
+            desired_audio = true;
+            desired_volume = (uint8_t)alarm->volume;
+            desired_track = (uint16_t)alarm->track;
         }
     }
+
+    if (!desired_audio) {
+        if (s_audio_is_playing) {
+            s_audio_is_playing = false;
+            s_audio_volume = 0;
+            s_audio_track = 0;
+            *should_stop_audio = true;
+        }
+        return;
+    }
+
+    if (!s_audio_is_playing || s_audio_volume != desired_volume || s_audio_track != desired_track) {
+        s_audio_is_playing = true;
+        s_audio_volume = desired_volume;
+        s_audio_track = desired_track;
+        *should_play_audio = true;
+        *play_volume = desired_volume;
+        *play_track = desired_track;
+    }
+}
+
+static int oldest_active_alarm_index_locked(void) { //finds the active alarm that started first, so snooze only affects the alarm the user most likely meant to silence
+    int selected_index = -1;
+    int64_t selected_alarm_epoch = 0;
+
+    for (int i = 0; i < s_state.alarm_count; i++) {
+        alarm_entry_t *alarm = &s_state.alarms[i];
+        if (!alarm->active) {
+            continue;
+        }
+
+        if (selected_index < 0 || alarm->last_alarm_epoch < selected_alarm_epoch) {
+            selected_index = i;
+            selected_alarm_epoch = alarm->last_alarm_epoch;
+        }
+    }
+
+    return selected_index;
+}
+
+static int first_relevant_alarm_index_locked(void) { //prefers the alarm that is actually ringing, and if nothing is ringing yet it falls back to the first enabled alarm
+    int active_alarm_index = oldest_active_alarm_index_locked();
+    if (active_alarm_index >= 0) {
+        return active_alarm_index;
+    }
+
     for (int i = 0; i < s_state.alarm_count; i++) {
         if (s_state.alarms[i].enabled) {
             return i;
@@ -166,6 +299,14 @@ void alarm_manager_init(void){ //prepares system for first use, initializing mut
 
     memset(&s_state, 0, sizeof(s_state));
     copy_text(s_state.device_id, sizeof(s_state.device_id), APP_DEVICE_ID);
+    s_state.comfort_min_temperature = DEFAULT_COMFORT_MIN_TEMPERATURE;
+    s_state.comfort_max_temperature = DEFAULT_COMFORT_MAX_TEMPERATURE;
+    s_audio_is_playing = false;
+    s_audio_volume = 0;
+    s_audio_track = 0;
+    s_comfort_alert_active = false;
+    s_comfort_alert_until_uptime_ms = 0;
+    s_next_comfort_alert_check_uptime_ms = 0;
 
     s_state.alarm_count = 1;
     s_state.alarms[0].enabled =
@@ -182,6 +323,7 @@ void alarm_manager_init(void){ //prepares system for first use, initializing mut
     s_state.alarms[0].track = 1;
     s_state.alarms[0].days_mask = ALARM_DAYS_EVERYDAY;
     s_state.alarms[0].last_fired_day_key = -1;
+    s_state.alarms[0].active_since_uptime_ms = 0;
     copy_text(s_state.alarms[0].label, sizeof(s_state.alarms[0].label), "Alarm 1");
     refresh_alarm_summary_locked();
 
@@ -202,6 +344,10 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
     }
 
     bool should_stop_audio = false;
+    bool should_play_audio = false;
+    uint8_t play_volume = 20;
+    uint16_t play_track = 1;
+    int64_t now_ms = esp_timer_get_time() / 1000;
 
     if (time_is_valid(server_epoch)) {
         struct timeval tv = {
@@ -216,10 +362,13 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
     }
 
     lock_state();
-    bool was_ringing = s_state.ringing;
     alarm_entry_t previous[ALARM_MAX_COUNT];
     int previous_count = s_state.alarm_count;
     memcpy(previous, s_state.alarms, sizeof(previous));
+
+    float next_comfort_min = settings->comfort_min_temperature;
+    float next_comfort_max = settings->comfort_max_temperature;
+    normalize_comfort_range(&next_comfort_min, &next_comfort_max);
 
     int next_count = settings->count;
     if (next_count < 0) {
@@ -234,6 +383,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
     for (int i = 0; i < next_count; i++) {
         alarm_entry_t next_alarm = normalized_alarm(&settings->alarms[i], i);
         next_alarm.active = false;
+        next_alarm.active_since_uptime_ms = 0;
         next_alarm.snoozed_until_epoch = 0;
         next_alarm.snoozed_until_uptime_ms = 0;
         next_alarm.last_alarm_epoch = 0;
@@ -241,6 +391,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
 
         if (i < previous_count && alarm_schedule_equal(&previous[i], &next_alarm)) {
             next_alarm.active = previous[i].enabled && previous[i].active;
+            next_alarm.active_since_uptime_ms = previous[i].enabled ? previous[i].active_since_uptime_ms : 0;
             next_alarm.snoozed_until_epoch = previous[i].enabled ? previous[i].snoozed_until_epoch : 0;
             next_alarm.snoozed_until_uptime_ms = previous[i].enabled ? previous[i].snoozed_until_uptime_ms : 0;
             next_alarm.last_alarm_epoch = previous[i].last_alarm_epoch;
@@ -249,6 +400,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
 
         if (!next_alarm.enabled) {
             next_alarm.active = false;
+            next_alarm.active_since_uptime_ms = 0;
             next_alarm.snoozed_until_epoch = 0;
             next_alarm.snoozed_until_uptime_ms = 0;
         }
@@ -256,11 +408,18 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
         s_state.alarms[i] = next_alarm;
     }
 
+    s_state.comfort_min_temperature = next_comfort_min;
+    s_state.comfort_max_temperature = next_comfort_max;
     s_state.last_settings_sync_epoch = time_is_valid(server_epoch) ? server_epoch : time(NULL);
+    expire_comfort_alert_locked(now_ms);
+    maybe_start_comfort_alert_locked(now_ms);
     refresh_alarm_summary_locked();
-    should_stop_audio = was_ringing && !s_state.ringing;
+    resolve_audio_output_locked(time(NULL), now_ms, &should_stop_audio, &should_play_audio, &play_volume, &play_track);
     unlock_state();
 
+    if (should_play_audio) {
+        audio_player_play_alarm(play_volume, play_track);
+    }
     if (should_stop_audio) {
         audio_player_stop();
     }
@@ -275,6 +434,8 @@ void alarm_manager_get_settings(alarm_settings_t *out_settings){ //used by the d
 
     lock_state();
     out_settings->count = s_state.alarm_count;
+    out_settings->comfort_min_temperature = s_state.comfort_min_temperature;
+    out_settings->comfort_max_temperature = s_state.comfort_max_temperature;
     memcpy(out_settings->alarms, s_state.alarms, sizeof(out_settings->alarms));
     unlock_state();
 }
@@ -292,20 +453,50 @@ void alarm_manager_get_status(alarm_status_t *out_status){
 }
 
 void alarm_manager_update_environment(float temperature_c, float humidity_percent){ //stores local physical measurements
+    bool should_stop_audio = false;
+    bool should_play_audio = false;
+    uint8_t play_volume = 20;
+    uint16_t play_track = 1;
+    int64_t now_ms = esp_timer_get_time() / 1000;
+
     lock_state();
     s_state.temperature_c = temperature_c;
     s_state.humidity_percent = humidity_percent;
     s_state.environment_valid = true;
+    expire_comfort_alert_locked(now_ms);
+    maybe_start_comfort_alert_locked(now_ms);
+    resolve_audio_output_locked(time(NULL), now_ms, &should_stop_audio, &should_play_audio, &play_volume, &play_track);
     unlock_state();
+
+    if (should_play_audio) {
+        audio_player_play_alarm(play_volume, play_track);
+    } else if (should_stop_audio) {
+        audio_player_stop();
+    }
 }
 
 void alarm_manager_update_air_quality(bool valid, int air_quality_index, int eco2_ppm, int tvoc_ppb){ //stores local physical measurements
+    bool should_stop_audio = false;
+    bool should_play_audio = false;
+    uint8_t play_volume = 20;
+    uint16_t play_track = 1;
+    int64_t now_ms = esp_timer_get_time() / 1000;
+
     lock_state();
     s_state.air_quality_valid = valid;
     s_state.air_quality_index = valid ? air_quality_index : 0;
     s_state.eco2_ppm = valid ? eco2_ppm : 0;
     s_state.tvoc_ppb = valid ? tvoc_ppb : 0;
+    expire_comfort_alert_locked(now_ms);
+    maybe_start_comfort_alert_locked(now_ms);
+    resolve_audio_output_locked(time(NULL), now_ms, &should_stop_audio, &should_play_audio, &play_volume, &play_track);
     unlock_state();
+
+    if (should_play_audio) {
+        audio_player_play_alarm(play_volume, play_track);
+    } else if (should_stop_audio) {
+        audio_player_stop();
+    }
 }
 
 void alarm_manager_mark_status_uploaded(void){ //keeps track of the timestamp indicating when data was last uploaded to the internet.
@@ -322,63 +513,82 @@ void alarm_manager_set_error(const char *message){ //stores the last error messa
 
 void alarm_manager_snooze(void){ //computes when it has to ring again based on the snooze duration and current time
     bool should_stop_audio = false;
+    bool should_play_audio = false;
+    uint8_t play_volume = 20;
+    uint16_t play_track = 1;
     time_t now = time(NULL);
     int64_t now_ms = esp_timer_get_time() / 1000;
 
     lock_state();
     if (s_state.ringing) {
-        for (int i = 0; i < s_state.alarm_count; i++) {
-            alarm_entry_t *alarm = &s_state.alarms[i];
-            if (!alarm->active) {
-                continue;
-            }
-
+        // We only snooze one alarm here, because other active alarms should still be able to ring.
+        int alarm_index = oldest_active_alarm_index_locked();
+        if (alarm_index >= 0) {
+            alarm_entry_t *alarm = &s_state.alarms[alarm_index];
             int snooze_seconds = alarm->snooze_minutes * 60;
             if (snooze_seconds <= 0) {
                 snooze_seconds = 300;
             }
 
             alarm->active = false;
+            alarm->active_since_uptime_ms = 0;
             alarm->snoozed_until_epoch = time_is_valid(now) ? (int64_t)now + snooze_seconds : 0;
             alarm->snoozed_until_uptime_ms = now_ms + ((int64_t)snooze_seconds * 1000);
             ESP_LOGI(TAG, "Alarm '%s' snoozed for %d minutes", alarm->label, alarm->snooze_minutes);
         }
 
         refresh_alarm_summary_locked();
-        should_stop_audio = true;
+        expire_comfort_alert_locked(now_ms);
+        resolve_audio_output_locked(now, now_ms, &should_stop_audio, &should_play_audio, &play_volume, &play_track);
     }
     unlock_state();
 
-    if (should_stop_audio) {
+    if (should_play_audio) {
+        audio_player_play_alarm(play_volume, play_track);
+    } else if (should_stop_audio) {
         audio_player_stop();
     }
 }
 
-void alarm_manager_stop(void){ //turns off all active ring or snooze states completely, resetting the clock back to tracking normal schedules.
+void alarm_manager_stop(void){ //stops the currently ringing item without cancelling unrelated snoozed alarms
     bool should_stop_audio = false;
+    bool should_play_audio = false;
+    uint8_t play_volume = 20;
+    uint16_t play_track = 1;
 
     lock_state();
-    if (s_state.ringing) {
+
+    int alarm_index = oldest_active_alarm_index_locked();
+    if (alarm_index >= 0) {
+        alarm_entry_t *alarm = &s_state.alarms[alarm_index];
+        alarm->active = false;
+        alarm->active_since_uptime_ms = 0;
+        should_stop_audio = true;
+        ESP_LOGI(TAG, "Alarm '%s' stopped", alarm->label);
+    } else if (s_comfort_alert_active) {
+        s_comfort_alert_active = false;
+        s_comfort_alert_until_uptime_ms = 0;
         should_stop_audio = true;
     }
-    for (int i = 0; i < s_state.alarm_count; i++) {
-        s_state.alarms[i].active = false;
-        s_state.alarms[i].snoozed_until_epoch = 0;
-        s_state.alarms[i].snoozed_until_uptime_ms = 0;
-    }
+
     refresh_alarm_summary_locked();
+    resolve_audio_output_locked(time(NULL), esp_timer_get_time() / 1000, &should_stop_audio, &should_play_audio, &play_volume, &play_track);
     unlock_state();
 
+    if (should_play_audio) {
+        audio_player_play_alarm(play_volume, play_track);
+    }
     if (should_stop_audio) {
         audio_player_stop();
     }
 }
 
-void alarm_manager_task(void *pvParameters){ //every second, it checks the time, calculates whether a regular alarm or snooze countdown has expired, and calls audio_player_play_alarm to start the physical speaker buzzing.
+void alarm_manager_task(void *pvParameters){ //every second, it checks the time, starts alarms when they are due, auto-snoozes them after one minute of ringing, and keeps the short comfort alert in sync with the sensor readings.
     (void)pvParameters;
 
     while (1) {
-        bool should_start_audio = false;
+        bool should_stop_audio = false;
+        bool should_play_audio = false;
         uint8_t play_volume = 20;
         uint16_t play_track = 1;
         time_t now = time(NULL);
@@ -386,9 +596,6 @@ void alarm_manager_task(void *pvParameters){ //every second, it checks the time,
 
         lock_state();
         s_state.time_valid = time_is_valid(now);
-
-        bool was_ringing = s_state.ringing;
-        bool newly_active = false;
         struct tm local_now = {0};
         int today_key = -1;
         if (s_state.time_valid) {
@@ -398,16 +605,33 @@ void alarm_manager_task(void *pvParameters){ //every second, it checks the time,
 
         for (int i = 0; i < s_state.alarm_count; i++) {
             alarm_entry_t *alarm = &s_state.alarms[i];
-            if (!alarm->enabled || alarm->active) {
+            if (!alarm->enabled) {
+                continue;
+            }
+
+            if (alarm->active) {
+                if (alarm->active_since_uptime_ms > 0 &&
+                    now_ms >= alarm->active_since_uptime_ms + ALARM_RING_TIMEOUT_MS) {
+                    int snooze_seconds = alarm->snooze_minutes * 60;
+                    if (snooze_seconds <= 0) {
+                        snooze_seconds = 300;
+                    }
+
+                    alarm->active = false;
+                    alarm->active_since_uptime_ms = 0;
+                    alarm->snoozed_until_epoch = time_is_valid(now) ? (int64_t)now + snooze_seconds : 0;
+                    alarm->snoozed_until_uptime_ms = now_ms + ((int64_t)snooze_seconds * 1000);
+                    ESP_LOGI(TAG, "Alarm '%s' timed out after 1 minute and was snoozed for %d minutes", alarm->label, alarm->snooze_minutes);
+                }
                 continue;
             }
 
             if (alarm->snoozed_until_uptime_ms > 0 && now_ms >= alarm->snoozed_until_uptime_ms) {
                 alarm->active = true;
+                alarm->active_since_uptime_ms = now_ms;
                 alarm->snoozed_until_epoch = 0;
                 alarm->snoozed_until_uptime_ms = 0;
                 alarm->last_alarm_epoch = s_state.time_valid ? now : 0;
-                newly_active = true;
                 play_volume = (uint8_t)alarm->volume;
                 play_track = (uint16_t)alarm->track;
                 ESP_LOGI(TAG, "Snoozed alarm '%s' ringing with track %d", alarm->label, alarm->track);
@@ -424,21 +648,25 @@ void alarm_manager_task(void *pvParameters){ //every second, it checks the time,
                 local_now.tm_min == alarm->minute &&
                 alarm->last_fired_day_key != today_key) {
                 alarm->active = true;
+                alarm->active_since_uptime_ms = now_ms;
                 alarm->last_alarm_epoch = now;
                 alarm->last_fired_day_key = today_key;
-                newly_active = true;
                 play_volume = (uint8_t)alarm->volume;
                 play_track = (uint16_t)alarm->track;
                 ESP_LOGI(TAG, "Alarm '%s' ringing with track %d", alarm->label, alarm->track);
             }
         }
 
+        expire_comfort_alert_locked(now_ms);
+        maybe_start_comfort_alert_locked(now_ms);
         refresh_alarm_summary_locked();
-        should_start_audio = newly_active && !was_ringing && s_state.ringing;
+        resolve_audio_output_locked(now, now_ms, &should_stop_audio, &should_play_audio, &play_volume, &play_track);
         unlock_state();
 
-        if (should_start_audio) {
+        if (should_play_audio) {
             audio_player_play_alarm(play_volume, play_track);
+        } else if (should_stop_audio) {
+            audio_player_stop();
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));

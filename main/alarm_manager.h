@@ -18,6 +18,7 @@ typedef struct {
     uint8_t days_mask;
     char label[ALARM_LABEL_SIZE];
     bool active;
+    int64_t active_since_uptime_ms;
     int64_t snoozed_until_epoch;
     int64_t snoozed_until_uptime_ms;
     int64_t last_alarm_epoch;
@@ -26,6 +27,8 @@ typedef struct {
 
 typedef struct {
     int count;
+    float comfort_min_temperature;
+    float comfort_max_temperature;
     alarm_entry_t alarms[ALARM_MAX_COUNT];
 } alarm_settings_t;
 
@@ -40,6 +43,8 @@ typedef struct {
     bool ringing;
     int alarm_count;
     int active_alarm_count;
+    float comfort_min_temperature;
+    float comfort_max_temperature;
     alarm_entry_t alarms[ALARM_MAX_COUNT];
     int64_t snoozed_until_epoch;
     int64_t last_alarm_epoch;
