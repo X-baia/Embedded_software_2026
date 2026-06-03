@@ -15,6 +15,7 @@ static const char *TAG = "AUDIO";
 #define DFPLAYER_DEFAULT_ALARM_TRACK 1
 #define DFPLAYER_PLAY_MP3_FOLDER_COMMAND 0x12
 
+// create the standard transmission packet
 static void dfplayer_send_command(uint8_t command, uint16_t parameter) {
     uint8_t packet[10] = {
         0x7E,
@@ -29,6 +30,7 @@ static void dfplayer_send_command(uint8_t command, uint16_t parameter) {
         0xEF,
     };
 
+// checksum to avoid corruptions
     uint16_t checksum = 0;
     for (int i = 1; i < 7; i++) {
         checksum += packet[i];
@@ -43,6 +45,8 @@ static void dfplayer_send_command(uint8_t command, uint16_t parameter) {
     }
 }
 
+
+// initialize the audio player, set the RX and TX, wait for half a second and set a default volume (20)
 void init_audio_player(void) {
     uart_config_t uart_config = {
         .baud_rate = DFPLAYER_BAUD_RATE,
@@ -61,6 +65,7 @@ void init_audio_player(void) {
     audio_player_set_volume(DFPLAYER_DEFAULT_VOLUME);
 }
 
+// set default volume at a maximum of 30
 void audio_player_set_volume(uint8_t volume) {
     if (volume > 30) {
         volume = 30;
@@ -68,6 +73,7 @@ void audio_player_set_volume(uint8_t volume) {
     dfplayer_send_command(0x06, volume);
 }
 
+// play a track 
 void audio_player_play_alarm(uint8_t volume, uint16_t track) {
     if (track == 0) {
         track = DFPLAYER_DEFAULT_ALARM_TRACK;
@@ -77,6 +83,7 @@ void audio_player_play_alarm(uint8_t volume, uint16_t track) {
     dfplayer_send_command(DFPLAYER_PLAY_MP3_FOLDER_COMMAND, track);
 }
 
+// stop the player
 void audio_player_stop(void) {
     ESP_LOGI(TAG, "Stopping audio");
     dfplayer_send_command(0x16, 0);
