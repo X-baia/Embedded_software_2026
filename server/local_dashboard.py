@@ -42,6 +42,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "days_mask": 127,
         }
     ],
+    "comfort_min_temperature": 18.0,
+    "comfort_max_temperature": 26.0,
     "sleep_profile": {
         "age_group": "adult_18_60",
         "time_to_fall_asleep": 15,
@@ -65,6 +67,8 @@ DEFAULT_STATUS: dict[str, Any] = {
     "ringing": False,
     "alarm_count": 0,
     "active_alarm_count": 0,
+    "comfort_min_temperature": 18.0,
+    "comfort_max_temperature": 26.0,
     "alarms": [],
     "time_valid": False,
     "environment_valid": False,
@@ -189,6 +193,16 @@ def parse_int(value: Any, default: int, minimum: int, maximum: int, name: str) -
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return parsed
 
+def parse_float(value: Any, default: float, minimum: float, maximum: float, name: str) -> float:
+    # The dashboard stores comfort limits as plain numbers, so we accept integers or decimals here.
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
 def preferred_cycles_for_age(age_group: str) -> int:
     min_hours, max_hours = AGE_SLEEP_HOURS.get(age_group, AGE_SLEEP_HOURS["adult_18_60"])
     midpoint_minutes = ((min_hours + max_hours) / 2) * 60
@@ -251,6 +265,12 @@ def normalize_settings(payload: dict[str, Any], previous_settings: dict[str, Any
     if isinstance(previous_settings, dict) and isinstance(previous_settings.get("alarms"), list):
         previous_alarms = previous_settings["alarms"]
 
+    previous_comfort_min = DEFAULT_SETTINGS["comfort_min_temperature"]
+    previous_comfort_max = DEFAULT_SETTINGS["comfort_max_temperature"]
+    if isinstance(previous_settings, dict):
+        previous_comfort_min = previous_settings.get("comfort_min_temperature", previous_comfort_min)
+        previous_comfort_max = previous_settings.get("comfort_max_temperature", previous_comfort_max)
+
     if "alarms" in payload:
         raw_alarms = payload.get("alarms")
         if not isinstance(raw_alarms, list):
@@ -280,8 +300,28 @@ def normalize_settings(payload: dict[str, Any], previous_settings: dict[str, Any
             )
         ]
 
+    comfort_min_temperature = parse_float(
+        payload.get("comfort_min_temperature", previous_comfort_min),
+        previous_comfort_min,
+        -20.0,
+        60.0,
+        "comfort_min_temperature",
+    )
+    comfort_max_temperature = parse_float(
+        payload.get("comfort_max_temperature", previous_comfort_max),
+        previous_comfort_max,
+        -20.0,
+        60.0,
+        "comfort_max_temperature",
+    )
+    if comfort_min_temperature > comfort_max_temperature:
+        # Swapping the bounds is easier for the user than rejecting the whole save.
+        comfort_min_temperature, comfort_max_temperature = comfort_max_temperature, comfort_min_temperature
+
     normalized = {
         "alarms": alarms,
+        "comfort_min_temperature": comfort_min_temperature,
+        "comfort_max_temperature": comfort_max_temperature,
         "sleep_profile": normalize_sleep_profile(payload.get("sleep_profile")),
     }
     if "updated_at" in payload:
