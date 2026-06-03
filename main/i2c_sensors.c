@@ -10,32 +10,35 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+//I2C -> communication protocol used by sensors to send datato the ESP32. allows multiple devices to share the same bus with unique addresses.
+
 static const char *TAG = "SENSORS";
 
-#define I2C_MASTER_NUM I2C_NUM_0
-#define AHT20_ADDR 0x38
+#define I2C_MASTER_NUM I2C_NUM_0 //which internal engine on the ESP32 handles the connection
+#define AHT20_ADDR 0x38 //address assigned to the AHT20 sensor (temperature and reliability)
 
-#define ENS160_ADDR_LOW 0x52
+//ENS160 measures air quality
+#define ENS160_ADDR_LOW 0x52 //can use either 0x52 or 0x53
 #define ENS160_ADDR_HIGH 0x53
-#define ENS160_PART_ID 0x0160
-#define ENS160_REG_PART_ID 0x00
-#define ENS160_REG_OPMODE 0x10
-#define ENS160_REG_DATA_AQI 0x21
+#define ENS160_PART_ID 0x0160 //unique ID burned into the sensor to verify it's the correct device
+#define ENS160_REG_PART_ID 0x00 //where the custom ID in the sensor is stored
+#define ENS160_REG_OPMODE 0x10 //register to change the sensor's status
+#define ENS160_REG_DATA_AQI 0x21 
 #define ENS160_REG_DATA_TVOC 0x22
-#define ENS160_REG_DATA_ECO2 0x24
-#define ENS160_OPMODE_STANDARD 0x02
-#define ENS160_REPROBE_PERIOD_MS 10000
+#define ENS160_REG_DATA_ECO2 0x24 //finalized read data is stored
+#define ENS160_OPMODE_STANDARD 0x02 //command code sent to wake up the sensor
+#define ENS160_REPROBE_PERIOD_MS 10000 //time wait before trying to reconnect to the sensor if it fails
 
-static uint8_t s_ens160_addr;
+static uint8_t s_ens160_addr; //saves which of the 2 registers (0x52 or 0x53) the ENS160 is using
 
-static bool i2c_probe_address(uint8_t device_addr)
-{
+//sends a zero-length write to the given address to see if a device responds with an ACK
+static bool i2c_probe_address(uint8_t device_addr){
     uint8_t unused = 0;
     return i2c_master_write_to_device(I2C_MASTER_NUM, device_addr, &unused, 0, pdMS_TO_TICKS(50)) == ESP_OK;
 }
 
-static void log_i2c_devices(void)
-{
+//loops through all possible I2C addresses, prints all the devices that respond
+static void log_i2c_devices(void){
     for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
         if (i2c_probe_address(addr)) {
             ESP_LOGI(TAG, "I2C device detected at 0x%02X", addr);
@@ -43,8 +46,8 @@ static void log_i2c_devices(void)
     }
 }
 
-static esp_err_t i2c_read_register(uint8_t device_addr, uint8_t reg_addr, uint8_t *data, size_t data_len)
-{
+//reads data from a specific register on an I2C device. first writes the register address, then reads the response
+static esp_err_t i2c_read_register(uint8_t device_addr, uint8_t reg_addr, uint8_t *data, size_t data_len){
     return i2c_master_write_read_device(
         I2C_MASTER_NUM,
         device_addr,
@@ -55,14 +58,15 @@ static esp_err_t i2c_read_register(uint8_t device_addr, uint8_t reg_addr, uint8_
         pdMS_TO_TICKS(100));
 }
 
-static esp_err_t i2c_write_register(uint8_t device_addr, uint8_t reg_addr, uint8_t value)
-{
+//overwrites a specific register inside a sensor. it sends both the register address and the new value in a single write operation
+static esp_err_t i2c_write_register(uint8_t device_addr, uint8_t reg_addr, uint8_t value){
     uint8_t data[] = {reg_addr, value};
     return i2c_master_write_to_device(I2C_MASTER_NUM, device_addr, data, sizeof(data), pdMS_TO_TICKS(100));
 }
 
-static bool ens160_init(void)
-{
+
+//checks and set up the ENS160 sensor. it tries both possible addresses (0x52 and 0x53) to find the sensor, then verifies the part ID and wakes it up from sleep mode. if any step fails, it returns false and will try again later.
+static bool ens160_init(void){
     const uint8_t addresses[] = {ENS160_ADDR_LOW, ENS160_ADDR_HIGH};
 
     for (size_t index = 0; index < sizeof(addresses) / sizeof(addresses[0]); index++) {
@@ -79,7 +83,7 @@ static bool ens160_init(void)
             continue;
         }
 
-        err = i2c_write_register(addr, ENS160_REG_OPMODE, ENS160_OPMODE_STANDARD);
+        err = i2c_write_register(addr, ENS160_REG_OPMODE, ENS160_OPMODE_STANDARD); //wake up the sensor from sleep mode and set it to standard mode
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "ENS160 standard mode failed at 0x%02X: %s", addr, esp_err_to_name(err));
             alarm_manager_set_error("ENS160 init failed");
@@ -87,7 +91,7 @@ static bool ens160_init(void)
         }
 
         s_ens160_addr = addr;
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(20)); //waits for the sensor to wake up
         ESP_LOGI(TAG, "ENS160 air quality sensor initialized at 0x%02X", s_ens160_addr);
         return true;
     }
@@ -96,8 +100,8 @@ static bool ens160_init(void)
     return false;
 }
 
-static bool ens160_read_air_quality(int *air_quality_index, int *eco2_ppm, int *tvoc_ppb)
-{
+//reads the data from the sensor, performs bit shifting to convert the raw bytes into usable values
+static bool ens160_read_air_quality(int *air_quality_index, int *eco2_ppm, int *tvoc_ppb){
     if (s_ens160_addr == 0) {
         return false;
     }
@@ -106,6 +110,7 @@ static bool ens160_read_air_quality(int *air_quality_index, int *eco2_ppm, int *
     uint8_t eco2_data[2] = {0};
     uint8_t tvoc_data[2] = {0};
 
+    //read all the data from the sensors, if something fails logs the error and resets the sensor address to 0
     esp_err_t err = i2c_read_register(s_ens160_addr, ENS160_REG_DATA_AQI, &aqi_data, sizeof(aqi_data));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "ENS160 AQI read failed at 0x%02X: %s", s_ens160_addr, esp_err_to_name(err));
@@ -130,6 +135,7 @@ static bool ens160_read_air_quality(int *air_quality_index, int *eco2_ppm, int *
         return false;
     }
 
+    //performs bit shifting
     int parsed_aqi = (int)aqi_data;
     int parsed_eco2 = (int)((uint16_t)eco2_data[0] | ((uint16_t)eco2_data[1] << 8));
     int parsed_tvoc = (int)((uint16_t)tvoc_data[0] | ((uint16_t)tvoc_data[1] << 8));
@@ -145,7 +151,8 @@ static bool ens160_read_air_quality(int *air_quality_index, int *eco2_ppm, int *
     return true;
 }
 
-void init_i2c_master(void) {
+//configures physical pins for I2C communications, sets clock speed.
+void init_i2c_master(void){
     i2c_config_t conf = {
         .mode = I2C_MODE_MASTER,
         .sda_io_num = 21,
@@ -160,7 +167,8 @@ void init_i2c_master(void) {
     log_i2c_devices();
 }
 
-void sensor_task(void *pvParameters) {
+//continuously reads data from the sensors, updates the alarm manager with the latest values, and handles any errors that may occur during communication
+void sensor_task(void *pvParameters){
     (void)pvParameters;
 
     uint8_t data[6];
@@ -168,7 +176,7 @@ void sensor_task(void *pvParameters) {
     TickType_t last_ens160_probe_tick = xTaskGetTickCount();
     
     while(1) {
-        // 1. Trigger Measurement
+        //trigger Measurement
         uint8_t trigger_cmd[] = {0xAC, 0x33, 0x00};
         esp_err_t err = i2c_master_write_to_device(I2C_MASTER_NUM, AHT20_ADDR, trigger_cmd, 3, pdMS_TO_TICKS(100));
         if (err != ESP_OK) {
@@ -178,10 +186,10 @@ void sensor_task(void *pvParameters) {
             continue;
         }
         
-        // 2. Wait for measurement to complete (AHT20 needs ~80ms)
+        //wait for measurement to complete
         vTaskDelay(pdMS_TO_TICKS(100));
 
-        // 3. Read 6 bytes of data
+        //read 6 bytes of data
         err = i2c_master_read_from_device(I2C_MASTER_NUM, AHT20_ADDR, data, 6, pdMS_TO_TICKS(100));
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "AHT20 read failed: %s", esp_err_to_name(err));
@@ -190,8 +198,7 @@ void sensor_task(void *pvParameters) {
             continue;
         }
 
-        // 4. Convert raw data to Temperature and Humidity
-        // These formulas come from the AHT20 Datasheet
+        //convert raw data to temperature and humidity
         uint32_t humidity_raw = ((uint32_t)data[1] << 12) | ((uint32_t)data[2] << 4) | (data[3] >> 4);
         float humidity = (float)humidity_raw * 100 / 1048576;
 
@@ -223,6 +230,6 @@ void sensor_task(void *pvParameters) {
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(2000)); // Read every 2 seconds
+        vTaskDelay(pdMS_TO_TICKS(2000)); //read every 2 seconds
     }
 }
