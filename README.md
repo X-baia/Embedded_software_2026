@@ -620,8 +620,8 @@ Check:
 
 ## Links
 
-- PowerPoint presentation: `[add presentation link here]`
-- YouTube demo video: `[add YouTube video link here]`
+- PowerPoint presentation: [Click here](Smart_Alarm_Clock.pptx)
+- YouTube demo video: [Click here](https://www.youtube.com/watch?v=Db_TUP1jiGg)
 
 Replace these placeholders with the final submission links.
 
