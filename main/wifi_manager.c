@@ -12,18 +12,18 @@
 
 static const char *TAG = "WIFI";
 
-//event-group bits used by other tasks to observe the connection state.
+//event-group bits used by other tasks to observe the connection state
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
-//initial disconnects are logged as fast retries before switching to quieter background retries.
+//initial disconnects are logged as fast retries before switching to quieter background retries
 #define WIFI_MAX_FAST_RETRIES 8
 
-//the event group is the shared synchronization object for Wi-Fi readiness.
+//the event group is the shared synchronization object for Wi-Fi readiness
 static EventGroupHandle_t s_wifi_event_group;
-//counts consecutive disconnects so logs can distinguish first retries from persistent failure.
+//counts consecutive disconnects so logs can distinguish first retries from persistent failure
 static int s_retry_count;
 
-//converts ESP-IDF disconnect reason codes into readable log messages.
+//converts ESP-IDF disconnect reason codes into readable log messages
 static const char *wifi_disconnect_reason_name(uint8_t reason)
 {
     switch (reason) {
@@ -54,19 +54,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 {
     (void)arg;
 
-    //when the station interface starts, immediately begin the connection attempt.
+    //when the station interface starts, immediately begin the connection attempt
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
         return;
     }
 
-    //on disconnect, clear the connected bit and ask ESP-IDF to reconnect.
+    //on disconnect, clear the connected bit and ask ESP-IDF to reconnect
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         s_retry_count++;
 
-        //the fail bit does not stop reconnecting; it only records that fast retries were exhausted.
+        //the fail bit does not stop reconnecting; it only records that fast retries were exhausted
         if (s_retry_count <= WIFI_MAX_FAST_RETRIES) {
             ESP_LOGW(TAG,
                      "Wi-Fi disconnected: reason=%u (%s), retrying (%d/%d)",
@@ -86,7 +86,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         return;
     }
 
-    //getting an IP address means the station is usable by network clients.
+    //getting an IP address means the station is usable by network clients
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Connected with IP " IPSTR, IP2STR(&event->ip_info.ip));
@@ -98,18 +98,18 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
 esp_err_t wifi_manager_start(void)
 {
-    //warn early when menuconfig still contains placeholder Wi-Fi settings.
+    //warn early when menuconfig still contains placeholder Wi-Fi settings
     if (strlen(APP_WIFI_SSID) == 0 || strcmp(APP_WIFI_SSID, "YOUR_WIFI_SSID") == 0) {
         ESP_LOGW(TAG, "Wi-Fi SSID is not configured. Set it in idf.py menuconfig.");
     }
 
-    //create the synchronization object before registering handlers that may set its bits.
+    //create the synchronization object before registering handlers that may set its bits
     s_wifi_event_group = xEventGroupCreate();
     if (s_wifi_event_group == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
-    //these ESP-IDF init calls may already be done by another module, so INVALID_STATE is accepted.
+    //these ESP-IDF init calls may already be done by another module, so INVALID_STATE is accepted
     esp_err_t err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         return err;
@@ -122,7 +122,7 @@ esp_err_t wifi_manager_start(void)
 
     esp_netif_create_default_wifi_sta();
 
-    //initialize the Wi-Fi driver with ESP-IDF default buffer and task settings.
+    //initialize the Wi-Fi driver with ESP-IDF default buffer and task settings
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     err = esp_wifi_init(&cfg);
     if (err != ESP_OK) {
@@ -139,11 +139,11 @@ esp_err_t wifi_manager_start(void)
         return err;
     }
 
-    //build station credentials from compile-time/app configuration.
+    //build station credentials from compile-time/app configuration
     wifi_config_t wifi_config = {0};
     snprintf((char *)wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid), "%s", APP_WIFI_SSID);
     snprintf((char *)wifi_config.sta.password, sizeof(wifi_config.sta.password), "%s", APP_WIFI_PASSWORD);
-    //empty password means open network; otherwise require at least WPA/WPA2 PSK.
+    //empty password means open network; otherwise require at least WPA/WPA2 PSK
     wifi_config.sta.threshold.authmode = strlen(APP_WIFI_PASSWORD) == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK;
     wifi_config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
 
@@ -169,7 +169,7 @@ esp_err_t wifi_manager_start(void)
 
 bool wifi_manager_is_connected(void)
 {
-    //before start-up there is no event group, so the station cannot be connected.
+    //before start-up there is no event group, so the station cannot be connected
     if (s_wifi_event_group == NULL) {
         return false;
     }

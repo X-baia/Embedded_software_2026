@@ -15,36 +15,36 @@
 
 static const char *TAG = "ALARM";
 
-//epochs below this value are treated as unsynchronized boot-time clocks.
+//epochs below this value are treated as unsynchronized boot-time clocks
 #define VALID_EPOCH_THRESHOLD 1600000000
-//default comfort limits used until the server sends configured values.
+//default comfort limits used until the server sends configured values
 #define DEFAULT_COMFORT_MIN_TEMPERATURE 18.0f
 #define DEFAULT_COMFORT_MAX_TEMPERATURE 26.0f
-//comfort alerts use a fixed track and repeat only periodically while the issue remains.
+//comfort alerts use a fixed track and repeat only periodically as long as the issue remains
 #define COMFORT_ALERT_AQI_THRESHOLD 3
 #define COMFORT_ALERT_TRACK 5
 #define COMFORT_ALERT_DURATION_MS 5000
 #define COMFORT_ALERT_REPEAT_INTERVAL_MS (30 * 60 * 1000)
-//normal alarm rings for one minute before it is automatically snoozed.
+//normal alarm rings for one minute before it is automatically snoozed
 #define ALARM_RING_TIMEOUT_MS 60000
 
-//shared alarm state is accessed by the alarm task, network task, sensors, and button task.
+//shared alarm state is accessed by the alarm task, network task, sensors, and button task
 static SemaphoreHandle_t s_lock;
 static alarm_status_t s_state;
-//cached audio state prevents repeatedly sending the same play/stop command to the player.
+//cached audio state prevents repeatedly sending the same play/stop command to the player
 static bool s_audio_is_playing;
 static uint8_t s_audio_volume;
 static uint16_t s_audio_track;
-//comfort alert state is tracked separately from regular alarms because it has different timing rules.
+//comfort alert state is tracked separately from regular alarms because it has different timing rules
 static bool s_comfort_alert_active;
 static int64_t s_comfort_alert_until_uptime_ms;
 static int64_t s_next_comfort_alert_check_uptime_ms;
 
 static int oldest_active_alarm_index_locked(void);
 
-//helper functions.
+//helper functions
 static void copy_text(char *dest, size_t dest_size, const char *src) { 
-    //copies strings safely, avoiding buffer overflow when labels or errors change.
+    //copies strings safely, avoiding buffer overflow when labels or errors change
     if (dest_size == 0) {
         return;
     }
@@ -56,12 +56,12 @@ static void copy_text(char *dest, size_t dest_size, const char *src) {
 }
 
 static bool time_is_valid(time_t now) { 
-    //checks whether the internal clock has a realistic synchronized time.
+    //checks whether the internal clock has a realistic synchronized time
     return now > VALID_EPOCH_THRESHOLD;
 }
 
 static bool alarm_schedule_equal(const alarm_entry_t *left, const alarm_entry_t *right) { 
-    //compares two alarm schedules to detect whether server settings changed.
+    //compares two alarm schedules to detect whether server settings changed
     return left->enabled == right->enabled &&
            left->hour == right->hour &&
            left->minute == right->minute &&
@@ -72,7 +72,7 @@ static bool alarm_schedule_equal(const alarm_entry_t *left, const alarm_entry_t 
 }
 
 static int alarm_day_key(const struct tm *local_time) { 
-    //generates a per-day key to avoid firing the same alarm more than once per day.
+    //generates a per-day key to avoid starting the same alarm more than once per day
     return (local_time->tm_year * 1000) + local_time->tm_yday;
 }
 
@@ -83,7 +83,7 @@ static bool alarm_runs_today(const alarm_entry_t *alarm, const struct tm *local_
 }
 
 static void normalize_comfort_range(float *min_temperature, float *max_temperature) { 
-    //keeps the selected comfort range inside the same limits used by the web dashboard.
+    //keeps the selected comfort range inside the same limits used by the web dashboard
     if (min_temperature == NULL || max_temperature == NULL) {
         return;
     }
@@ -102,7 +102,7 @@ static void normalize_comfort_range(float *min_temperature, float *max_temperatu
 }
 
 static bool comfort_condition_active_locked(void) { 
-    //checks whether current sensor values are outside the configured comfort range.
+    //checks whether current sensor values are outside the configured comfort range
     bool temperature_outside_range = s_state.environment_valid &&
                                      (s_state.temperature_c < s_state.comfort_min_temperature ||
                                       s_state.temperature_c > s_state.comfort_max_temperature);
@@ -111,7 +111,7 @@ static bool comfort_condition_active_locked(void) {
 }
 
 static void expire_comfort_alert_locked(int64_t now_ms) {
-    //clears the comfort alert after its short playback window has finished.
+    //clears the comfort alert after its short playback window has finished
     if (s_comfort_alert_active && now_ms >= s_comfort_alert_until_uptime_ms) {
         s_comfort_alert_active = false;
         s_comfort_alert_until_uptime_ms = 0;
@@ -119,7 +119,7 @@ static void expire_comfort_alert_locked(int64_t now_ms) {
 }
 
 static void maybe_start_comfort_alert_locked(int64_t now_ms) { 
-    //starts a short alert, then waits before repeating while bad conditions persist.
+    //starts a short alert, then waits before repeating as long as bad conditions persist
     bool condition_active = comfort_condition_active_locked();
     if (!condition_active) {
         s_next_comfort_alert_check_uptime_ms = 0;
@@ -136,7 +136,7 @@ static void maybe_start_comfort_alert_locked(int64_t now_ms) {
 }
 
 static void resolve_audio_output_locked(time_t now, int64_t now_ms, bool *should_stop_audio, bool *should_play_audio, uint8_t *play_volume, uint16_t *play_track) { 
-    //keeps the DFPlayer aligned with the alarm or comfort alert that should be audible.
+    //keeps the DFPlayer aligned with the alarm or comfort alert that you should be hearing
     (void)now;
 
     if (should_stop_audio == NULL || should_play_audio == NULL || play_volume == NULL || play_track == NULL) {
@@ -152,7 +152,7 @@ static void resolve_audio_output_locked(time_t now, int64_t now_ms, bool *should
     uint16_t desired_track = 0;
     bool desired_audio = false;
 
-    //comfort alerts take priority over regular alarm playback during their five-second window.
+    //comfort alerts take priority over regular alarm playback during their five-second window
     if (s_comfort_alert_active && now_ms < s_comfort_alert_until_uptime_ms) {
         desired_audio = true;
         desired_volume = 20;
@@ -167,7 +167,7 @@ static void resolve_audio_output_locked(time_t now, int64_t now_ms, bool *should
         }
     }
 
-    //if nothing should be audible, request one stop command only when audio was previously playing.
+    //if nothing should be playing, request one stop command only when an audio was playing previously
     if (!desired_audio) {
         if (s_audio_is_playing) {
             s_audio_is_playing = false;
@@ -178,7 +178,7 @@ static void resolve_audio_output_locked(time_t now, int64_t now_ms, bool *should
         return;
     }
 
-    //start or restart playback only when the desired track or volume has changed.
+    //start or restart playback only when the desired track or volume has changed
     if (!s_audio_is_playing || s_audio_volume != desired_volume || s_audio_track != desired_track) {
         s_audio_is_playing = true;
         s_audio_volume = desired_volume;
@@ -190,7 +190,7 @@ static void resolve_audio_output_locked(time_t now, int64_t now_ms, bool *should
 }
 
 static int oldest_active_alarm_index_locked(void) { 
-    //finds the active alarm that started first, so snooze targets the expected alarm.
+    //finds the active alarm that started first, so snooze targets the expected alarm
     int selected_index = -1;
     int64_t selected_alarm_epoch = 0;
 
@@ -210,7 +210,7 @@ static int oldest_active_alarm_index_locked(void) {
 }
 
 static int first_relevant_alarm_index_locked(void) { 
-    //prefers the ringing alarm, then falls back to the first enabled alarm.
+    //prefers the ringing alarm, then falls back to the first enabled alarm
     int active_alarm_index = oldest_active_alarm_index_locked();
     if (active_alarm_index >= 0) {
         return active_alarm_index;
@@ -225,7 +225,7 @@ static int first_relevant_alarm_index_locked(void) {
 }
 
 static void refresh_alarm_summary_locked(void) { 
-    //updates cached summary fields used by the display and status upload.
+    //updates cached summary fields used by the display and status upload
     int active_count = 0;
     bool any_enabled = false;
     int64_t next_snoozed_until = 0;
@@ -255,7 +255,7 @@ static void refresh_alarm_summary_locked(void) {
     s_state.snoozed_until_epoch = next_snoozed_until;
     s_state.last_alarm_epoch = latest_alarm_epoch;
 
-    //mirror the most relevant alarm into legacy single-alarm fields for older UI/status code.
+    //mirror the most relevant alarm into legacy single-alarm fields for older UI/status code
     if (selected_index >= 0) {
         const alarm_entry_t *selected = &s_state.alarms[selected_index];
         s_state.alarm_hour = selected->hour;
@@ -273,7 +273,7 @@ static void refresh_alarm_summary_locked(void) {
 }
 
 static alarm_entry_t normalized_alarm(const alarm_entry_t *source, int index) { 
-    //replaces invalid alarm inputs with safe default values.
+    //replaces invalid alarm inputs with safe default values
     alarm_entry_t alarm = {0};
     if (source != NULL) {
         alarm = *source;
@@ -305,23 +305,23 @@ static alarm_entry_t normalized_alarm(const alarm_entry_t *source, int index) {
 }
 
 static void lock_state(void){ 
-    //locks the state mutex to protect concurrent access from multiple tasks.
+    //locks the state mutex to protect concurrent access from multiple tasks
     if (s_lock != NULL) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
     }
 }
 
 static void unlock_state(void){ 
-    //unlocks the state mutex after a protected state update or read.
+    //unlocks the state mutex after a protected state update or read
     if (s_lock != NULL) {
         xSemaphoreGive(s_lock);
     }
 }
 
 
-//public functions used by the rest of the firmware.
+//public functions used by the rest of the firmware
 void alarm_manager_init(void){ 
-    //prepares the alarm system for first use by initializing mutex, state, and timezone.
+    //prepares the alarm system for first use by initializing mutex, state, and timezone
     s_lock = xSemaphoreCreateMutex();
     configASSERT(s_lock != NULL);
 
@@ -343,7 +343,7 @@ void alarm_manager_init(void){
 #else
         false;
 #endif
-    //default values are used until the dashboard sends settings or if networking is unavailable.
+    //default values are used until the dashboard sends settings or if networking is unavailable
     s_state.alarms[0].hour = APP_DEFAULT_ALARM_HOUR;
     s_state.alarms[0].minute = APP_DEFAULT_ALARM_MINUTE;
     s_state.alarms[0].snooze_minutes = APP_DEFAULT_SNOOZE_MINUTES;
@@ -367,7 +367,7 @@ void alarm_manager_init(void){
 }
 
 void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t server_epoch){ 
-    //synchronizes the clock if server time is valid, then applies alarm settings.
+    //synchronizes the clock if server time is valid, then applies alarm settings
     if (settings == NULL) {
         return;
     }
@@ -378,7 +378,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
     uint16_t play_track = 1;
     int64_t now_ms = esp_timer_get_time() / 1000;
 
-    //the server epoch is trusted only if it looks like a real Unix timestamp.
+    //the server epoch is trusted only if it looks like a real Unix timestamp
     if (time_is_valid(server_epoch)) {
         struct timeval tv = {
             .tv_sec = server_epoch,
@@ -392,7 +392,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
     }
 
     lock_state();
-    //keep a copy of the old alarms so unchanged alarms can preserve runtime state.
+    //keep a copy of the old alarms so unchanged alarms can preserve runtime state
     alarm_entry_t previous[ALARM_MAX_COUNT];
     int previous_count = s_state.alarm_count;
     memcpy(previous, s_state.alarms, sizeof(previous));
@@ -409,7 +409,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
         next_count = ALARM_MAX_COUNT;
     }
 
-    //replace the configured alarms while preserving active/snoozed state for unchanged entries.
+    //replace the configured alarms while preserving active/snoozed state for unchanged ones
     memset(s_state.alarms, 0, sizeof(s_state.alarms));
     s_state.alarm_count = next_count;
     for (int i = 0; i < next_count; i++) {
@@ -421,7 +421,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
         next_alarm.last_alarm_epoch = 0;
         next_alarm.last_fired_day_key = -1;
 
-        //if the schedule did not change, keep runtime state such as active or snoozed timestamps.
+        //if the schedule did not change, keep runtime state such as active or snoozed timestamps
         if (i < previous_count && alarm_schedule_equal(&previous[i], &next_alarm)) {
             next_alarm.active = previous[i].enabled && previous[i].active;
             next_alarm.active_since_uptime_ms = previous[i].enabled ? previous[i].active_since_uptime_ms : 0;
@@ -431,7 +431,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
             next_alarm.last_fired_day_key = previous[i].last_fired_day_key;
         }
 
-        //disabled alarms must never keep a stale active or snoozed state.
+        //disabled alarms must never keep a stale active or snoozed state
         if (!next_alarm.enabled) {
             next_alarm.active = false;
             next_alarm.active_since_uptime_ms = 0;
@@ -451,7 +451,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
     resolve_audio_output_locked(time(NULL), now_ms, &should_stop_audio, &should_play_audio, &play_volume, &play_track);
     unlock_state();
 
-    //audio commands are executed after releasing the mutex so hardware calls do not block state access.
+    //audio commands are executed after releasing the mutex so hardware calls do not block state access
     if (should_play_audio) {
         audio_player_play_alarm(play_volume, play_track);
     }
@@ -463,7 +463,7 @@ void alarm_manager_apply_settings(const alarm_settings_t *settings, time_t serve
 }
 
 void alarm_manager_get_settings(alarm_settings_t *out_settings){ 
-    //copies the current alarm settings for display and network code.
+    //copies the current alarm settings for display and network code
     if (out_settings == NULL) {
         return;
     }
@@ -477,7 +477,7 @@ void alarm_manager_get_settings(alarm_settings_t *out_settings){
 }
 
 void alarm_manager_get_status(alarm_status_t *out_status){ 
-    //copies the full current status snapshot for display or upload.
+    //copies the full current status snapshot for display or upload
     if (out_status == NULL) {
         return;
     }
@@ -490,7 +490,7 @@ void alarm_manager_get_status(alarm_status_t *out_status){
 }
 
 void alarm_manager_update_environment(float temperature_c, float humidity_percent){ 
-    //stores local temperature and humidity measurements.
+    //stores local temperature and humidity measurements
     bool should_stop_audio = false;
     bool should_play_audio = false;
     uint8_t play_volume = 20;
@@ -514,7 +514,7 @@ void alarm_manager_update_environment(float temperature_c, float humidity_percen
 }
 
 void alarm_manager_update_air_quality(bool valid, int air_quality_index, int eco2_ppm, int tvoc_ppb){ 
-    //stores local air-quality measurements.
+    //stores local air-quality measurements
     bool should_stop_audio = false;
     bool should_play_audio = false;
     uint8_t play_volume = 20;
@@ -539,21 +539,21 @@ void alarm_manager_update_air_quality(bool valid, int air_quality_index, int eco
 }
 
 void alarm_manager_mark_status_uploaded(void){ 
-    //records when status data was last uploaded to the server.
+    //records when status data was last uploaded to the server
     lock_state();
     s_state.last_status_upload_epoch = time(NULL);
     unlock_state();
 }
 
 void alarm_manager_set_error(const char *message){ 
-    //stores the last error message for display and status upload.
+    //stores the last error message for display and status upload
     lock_state();
     copy_text(s_state.last_error, sizeof(s_state.last_error), message);
     unlock_state();
 }
 
 void alarm_manager_snooze(void){ 
-    //computes the next ring time from the alarm snooze duration and current time.
+    //computes the next ring time from the alarm snooze duration and current time
     bool should_stop_audio = false;
     bool should_play_audio = false;
     uint8_t play_volume = 20;
@@ -563,7 +563,7 @@ void alarm_manager_snooze(void){
 
     lock_state();
     if (s_state.ringing) {
-        //we only snooze one alarm here, because other active alarms should still be able to ring.
+        //we only snooze one alarm here, because other active alarms should still be able to ring
         int alarm_index = oldest_active_alarm_index_locked();
         if (alarm_index >= 0) {
             alarm_entry_t *alarm = &s_state.alarms[alarm_index];
@@ -593,7 +593,7 @@ void alarm_manager_snooze(void){
 }
 
 void alarm_manager_stop(void){ 
-    //stops the currently ringing item without cancelling unrelated snoozed alarms.
+    //stops the currently ringing item without cancelling unrelated snoozed alarms
     bool should_stop_audio = false;
     bool should_play_audio = false;
     uint8_t play_volume = 20;
@@ -627,7 +627,7 @@ void alarm_manager_stop(void){
 }
 
 void alarm_manager_task(void *pvParameters){ 
-    //checks alarms every second, handles auto-snooze, and keeps comfort alerts synchronized.
+    //checks alarms every second, handles auto-snooze, and keeps comfort alerts synchronized
     (void)pvParameters;
 
     while (1) {
@@ -642,7 +642,7 @@ void alarm_manager_task(void *pvParameters){
         s_state.time_valid = time_is_valid(now);
         struct tm local_now = {0};
         int today_key = -1;
-        //alarm schedules use local time only after the clock has been synchronized.
+        //alarm schedules use local time only after the clock has been synchronized
         if (s_state.time_valid) {
             localtime_r(&now, &local_now);
             today_key = alarm_day_key(&local_now);
@@ -654,7 +654,7 @@ void alarm_manager_task(void *pvParameters){
                 continue;
             }
 
-            //active alarms time out after one minute and become snoozed automatically.
+            //active alarms time out after one minute and become snoozed automatically
             if (alarm->active) {
                 if (alarm->active_since_uptime_ms > 0 &&
                     now_ms >= alarm->active_since_uptime_ms + ALARM_RING_TIMEOUT_MS) {
@@ -672,7 +672,7 @@ void alarm_manager_task(void *pvParameters){
                 continue;
             }
 
-            //snoozed alarms use uptime so they can ring again even if wall-clock time is invalid.
+            //snoozed alarms use uptime so they can ring again even if wall-clock time is invalid
             if (alarm->snoozed_until_uptime_ms > 0 && now_ms >= alarm->snoozed_until_uptime_ms) {
                 alarm->active = true;
                 alarm->active_since_uptime_ms = now_ms;
@@ -689,7 +689,7 @@ void alarm_manager_task(void *pvParameters){
                 continue;
             }
 
-            //regular scheduled alarms fire once per configured day at the matching hour and minute.
+            //regular scheduled alarms fire once per configured day at the matching hour and minute
             if (alarm->snoozed_until_uptime_ms == 0 &&
                 alarm_runs_today(alarm, &local_now) &&
                 local_now.tm_hour == alarm->hour &&
