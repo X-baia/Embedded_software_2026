@@ -637,48 +637,9 @@ Replace these placeholders with the final submission links.
 | Chiara | I2C Sensor implementation | I2C bus setup, AHT20 temperature/humidity reading, ENS160 air-quality reading, and sensor error handling |
 | Whole team | Remaining modules | Alarm manager, network integration, dashboard behavior, testing, debugging, and final integration |
 
-<!--=========================================================================-->
 
-## Future Work
 
-### Hardware
 
-- Custom protective enclosure.
-- Better speaker system.
-- Improved power management.
-- More robust wiring or custom PCB.
 
-### Software
 
-- More distinctive alarm sounds.
-- Improved dashboard user interface.
-- More robust network recovery.
-- Event logging for alarms, sensor errors, and connectivity.
-- Historical visualization of sensor data.
 
-### Additional Features
-
-- Upload custom alarm tracks from the website.
-- Remote notifications.
-- Cloud synchronization.
-- OTA firmware updates.
-- Multiple user profiles.
-- Alarm history.
-
-### Additional Sensors
-
-- Temperature sensor.
-- Humidity sensor.
-- Ambient light sensor.
-- Motion detector.
-- Air quality sensor.
-
-## Acknowledgments
-
-This project was developed as part of the Embedded Software course project.
-
-## Final Statement
-
-The project successfully demonstrates an integrated embedded system combining
-sensing, networking, user interaction, and audio feedback while providing a solid
-foundation for future extensions.
