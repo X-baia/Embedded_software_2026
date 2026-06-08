@@ -1,202 +1,457 @@
 # Smart Alarm Clock
 
-Local-only ESP32 smart alarm clock project. The ESP32 connects to your Wi-Fi LAN, polls a local dashboard for alarm settings, uploads device status, and rings a DFPlayer alarm track when the configured local time is reached.
+ESP32-based smart alarm clock with local Wi-Fi configuration, environmental sensing,
+physical button control, and DFPlayer Mini audio playback.
 
-No internet or cloud service is required.
+The project runs entirely on a local network. No cloud service is required: the ESP32
+communicates with a local web dashboard to download alarm settings and upload live
+device status.
 
-## Quick tutorial
+## Project Overview
 
-### 1. Run the local web app
+The Smart Alarm Clock combines multiple embedded-system features in one integrated
+application:
 
-From the project folder:
+- Multi-alarm scheduling with configurable time, days, snooze, volume, and track.
+- Local web dashboard for alarm setup, sleep schedule planning, and live monitoring.
+- AHT20 temperature/humidity sensing over I2C.
+- Optional ENS160 air-quality sensing over I2C.
+- Physical button interaction for snooze and stop.
+- DFPlayer Mini audio output over UART.
+- Wi-Fi reconnect handling and local REST API synchronization.
+- Shared alarm state protected across FreeRTOS tasks.
+
+## Requirements
+
+### Hardware
+
+- ESP32 development board.
+- AHT20 temperature/humidity sensor.
+- Optional ENS160 air-quality sensor.
+- DFPlayer Mini MP3 module.
+- MicroSD card for the DFPlayer Mini.
+- Speaker compatible with the DFPlayer Mini.
+- Push button.
+- Breadboard and jumper wires.
+- Stable 5 V / USB power supply for the ESP32 and peripherals.
+
+### Wiring Summary
+
+| Component | ESP32 Connection | Notes |
+|---|---:|---|
+| AHT20 SDA | GPIO 21 | I2C data |
+| AHT20 SCL | GPIO 22 | I2C clock |
+| ENS160 SDA | GPIO 21 | Same I2C bus, optional |
+| ENS160 SCL | GPIO 22 | Same I2C bus, optional |
+| Button | GPIO 4 | Active-low, internal pull-up enabled |
+| DFPlayer RX | GPIO 17 | ESP32 UART1 TX |
+| DFPlayer TX | GPIO 16 | ESP32 UART1 RX |
+| DFPlayer speaker | Speaker output | Use suitable speaker/load |
+
+The ENS160 can be detected at address `0x52` or `0x53`. The AHT20 uses address
+`0x38`.
+
+### Software
+
+- ESP-IDF installed and configured.
+- Python 3.
+- A modern web browser.
+- Local Wi-Fi network or mobile hotspot.
+- Serial USB driver for the ESP32 board, if required by your operating system.
+
+The local dashboard uses only Python standard-library modules.
+
+## Project Layout
+
+```text
+.
+|-- CMakeLists.txt
+|-- README.md
+|-- sdkconfig
+|-- main/
+|   |-- CMakeLists.txt
+|   |-- Kconfig.projbuild
+|   |-- app_config.h
+|   |-- main.c
+|   |-- alarm_manager.c
+|   |-- alarm_manager.h
+|   |-- audio_player.c
+|   |-- audio_player.h
+|   |-- i2c_sensors.c
+|   |-- i2c_sensors.h
+|   |-- network_client.c
+|   |-- network_client.h
+|   |-- user_button.c
+|   |-- user_button.h
+|   |-- wifi_manager.c
+|   `-- wifi_manager.h
+`-- server/
+    |-- local_dashboard.py
+    |-- dashboard.html
+    |-- script.js
+    |-- style.css
+    `-- tracks/
+```
+
+### Source Code Organization
+
+| File / Module | Responsibility |
+|---|---|
+| `main/main.c` | Firmware entry point, hardware initialization, FreeRTOS task creation |
+| `main/alarm_manager.*` | Alarm configuration, runtime state, snooze/stop logic, comfort alerts, shared status |
+| `main/audio_player.*` | DFPlayer Mini UART setup, volume control, play/stop commands |
+| `main/i2c_sensors.*` | I2C setup, AHT20 readings, ENS160 readings, sensor error handling |
+| `main/user_button.*` | GPIO button setup, polling, debounce, single/double press behavior |
+| `main/wifi_manager.*` | Wi-Fi station setup, reconnect handling, ESP-IDF event callbacks |
+| `main/network_client.*` | HTTP polling of alarm settings and status upload to the dashboard |
+| `main/app_config.h` | Firmware configuration aliases from `sdkconfig` |
+| `main/Kconfig.projbuild` | ESP-IDF menuconfig options for Wi-Fi, dashboard URL, alarm defaults, and timing |
+| `server/local_dashboard.py` | Local web server and REST API |
+| `server/dashboard.html` | Dashboard page structure |
+| `server/script.js` | Dashboard client-side behavior |
+| `server/style.css` | Dashboard styling |
+| `server/tracks/` | Browser-previewable alarm track files |
+
+## Software Architecture
+
+The firmware is organized as several cooperating FreeRTOS tasks:
+
+```text
+                       +----------------------+
+                       |       main.c         |
+                       | Init + task startup  |
+                       +----------+-----------+
+                                  |
+          +-----------------------+-----------------------+
+          |                       |                       |
++------------------+    +------------------+    +------------------+
+| Sensor Task      |    | Button Task      |    | Alarm Task       |
+| i2c_sensors.c    |    | user_button.c    |    | alarm_manager.c  |
++--------+---------+    +--------+---------+    +--------+---------+
+         |                       |                       |
+         +-----------------------+-----------------------+
+                                  |
+                       +----------------------+
+                       | Shared Alarm State   |
+                       | Mutex protected      |
+                       +----------+-----------+
+                                  |
+          +-----------------------+-----------------------+
+          |                                               |
++------------------+                            +------------------+
+| Audio Player     |                            | Network Client   |
+| DFPlayer / UART  |                            | HTTP API         |
++------------------+                            +--------+---------+
+                                                        |
+                                               +------------------+
+                                               | WiFi Manager     |
+                                               | ESP-IDF events   |
+                                               +------------------+
+```
+
+The `alarm_manager` module is the central coordination point. It stores alarm
+settings, runtime alarm state, sensor values, timestamps, and error information.
+This shared data is protected by a FreeRTOS mutex because it is accessed by sensor,
+button, alarm, and network tasks.
+
+## How the Firmware Works
+
+### Startup Sequence
+
+At boot, `app_main()` initializes persistent storage, alarm defaults, hardware
+drivers, Wi-Fi, and then starts the main FreeRTOS tasks:
+
+```c
+void app_main(void) {
+    ESP_LOGI(TAG, "=== Smart Alarm Booting Up ===");
+
+    init_nvs();
+    alarm_manager_init();
+
+    init_i2c_master();
+    init_audio_player();
+    init_user_button();
+    ESP_ERROR_CHECK(wifi_manager_start());
+
+    xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
+    xTaskCreate(button_task, "button_task", 2048, NULL, 5, NULL);
+    xTaskCreate(alarm_manager_task, "alarm_task", 4096, NULL, 5, NULL);
+    xTaskCreate(network_client_task, "network_client", 8192, NULL, 5, NULL);
+}
+```
+
+### Runtime Behavior
+
+- `sensor_task` reads environmental data approximately every 2 seconds.
+- `button_task` polls the button every 20 ms and applies software debouncing.
+- `alarm_manager_task` checks alarm conditions every second.
+- `network_client_task` waits for Wi-Fi, downloads alarm settings, and uploads status.
+- `wifi_manager` uses ESP-IDF Wi-Fi/IP event callbacks to track connectivity.
+
+### Interrupts and Events
+
+The button does not use a GPIO interrupt. It is configured with interrupts disabled:
+
+```c
+.intr_type = GPIO_INTR_DISABLE
+```
+
+Button input is handled by polling because this makes debounce and double-press
+detection simple and predictable.
+
+Wi-Fi/IP events are handled through ESP-IDF callbacks:
+
+```c
+static void wifi_event_handler(void *arg,
+                               esp_event_base_t event_base,
+                               int32_t event_id,
+                               void *event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+        return;
+    }
+
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        s_retry_count++;
+        esp_wifi_connect();
+        return;
+    }
+
+    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+```
+
+## Build, Burn, and Run
+
+### 1. Start the Local Dashboard
+
+From the project root:
 
 ```sh
 python3 server/local_dashboard.py --host 0.0.0.0 --port 8000
 ```
 
-Open this on the same computer:
+Open the dashboard on the computer running the server:
 
 ```text
 http://localhost:8000
 ```
 
-The page is the monitoring dashboard, alarm editor, and sleep schedule planner.
+The dashboard is used to create alarms, preview tracks, configure sleep schedule
+preferences, and monitor live device status.
 
-### 2. Configure alarms in the dashboard
+### 2. Find the Computer LAN IP Address
 
-Use the browser page to prepare the device settings:
+The ESP32 cannot use `localhost`, because `localhost` would refer to the ESP32
+itself. Use the IP address of the computer running the dashboard.
 
-1. In `Alarms`, add one or more alarms, set their times, snooze durations, ringtone tracks, enabled state, and active days.
-2. In `Sleep Schedule`, tune the age group, fall-asleep delay, cycle length, and preferred number of sleep cycles.
-3. Use a recommended sleep-cycle time to add an alarm, then press `Save`.
-4. Keep the page open while the ESP32 is running so it can show live status from the board.
+Examples:
 
-The ESP32 fetches the saved settings from `GET /api/alarm-settings` and uploads live monitoring data to `POST /api/status`.
+```sh
+ipconfig
+```
 
-### 3. Find your computer LAN IP
-
-The ESP32 cannot use `localhost`, because `localhost` would mean the ESP32 itself. Use your computer's LAN IP.
-
-On macOS, usually:
+or, on macOS:
 
 ```sh
 ipconfig getifaddr en0
 ```
 
-If you are on Ethernet, try:
-
-```sh
-ipconfig getifaddr en1
-```
-
-Example result:
+Example LAN address:
 
 ```text
 192.168.1.23
 ```
 
-Then the ESP32 server URL should be:
+The ESP32 dashboard URL should then be:
 
 ```text
 http://192.168.1.23:8000
 ```
 
-### 4. Configure and flash the ESP32
+### 3. Configure the Firmware
 
-In an ESP-IDF terminal:
-
-```sh
-idf.py menuconfig
-```
-
-Open `Smart Alarm Clock` and set:
-
-- `Wi-Fi SSID`
-- `Wi-Fi password`
-- `Local dashboard/API base URL`, for example `http://192.168.1.23:8000`
-
-Then build and flash:
-
-```sh
-idf.py set-target esp32
-idf.py build
-idf.py flash monitor
-```
-
-Keep `server/local_dashboard.py` running while the ESP32 is on. The ESP32 polls settings and uploads status every few seconds.
-
-## Project layout
-
-- `main/`: ESP-IDF firmware.
-- `main/alarm_manager.*`: alarm settings, ringing/snooze state, clock sync, sensor status.
-- `main/wifi_manager.*`: Wi-Fi station connection and reconnect handling.
-- `main/network_client.*`: HTTP polling/upload to the local dashboard API.
-- `server/local_dashboard.py`: offline dashboard and REST API using Python standard library only.
-
-## Local dashboard/API reference
-
-Start the dashboard on the computer that is on the same Wi-Fi/LAN as the ESP32:
-
-```sh
-python3 server/local_dashboard.py --host 0.0.0.0 --port 8000
-```
-
-Open `http://localhost:8000` in a browser on that computer.
-
-For the ESP32, use the computer's LAN IP address, not `localhost`. Example:
-
-```text
-http://192.168.1.23:8000
-```
-
-The server stores local state in `server/state/`.
-
-## Firmware configuration
-
-Configure the ESP32 firmware with ESP-IDF:
+Open ESP-IDF configuration:
 
 ```sh
 idf.py menuconfig
 ```
 
-Open `Smart Alarm Clock` and set:
+Go to `Smart Alarm Clock` and configure:
 
-- `Wi-Fi SSID`
-- `Wi-Fi password`
-- `Local dashboard/API base URL`, for example `http://192.168.1.23:8000`
-- Optional defaults such as device id, alarm time, snooze duration, timezone, and sync periods
+- Wi-Fi SSID.
+- Wi-Fi password.
+- Local dashboard/API base URL, for example `http://192.168.1.23:8000`.
+- Device ID.
+- Default alarm time.
+- Default snooze duration.
+- Timezone.
+- Settings polling period.
+- Status upload period.
+- HTTP timeout.
 
-Do not put private Wi-Fi credentials directly in `main/Kconfig.projbuild`. That file defines menu defaults and is part of the source tree. The values used by the firmware come from the generated local `sdkconfig`, which is created/updated by `idf.py menuconfig`.
+Do not hard-code private Wi-Fi credentials into source files. The firmware reads
+these values from `sdkconfig`, generated by `idf.py menuconfig`.
 
-To confirm what the firmware will compile with:
-
-```sh
-grep SMART_ALARM_WIFI sdkconfig
-```
-
-If it still shows placeholder values, run `idf.py menuconfig`, save the settings, then rebuild and flash.
-
-The default timezone is for Italy/Central Europe:
-
-```text
-CET-1CEST,M3.5.0/2,M10.5.0/3
-```
-
-## Build, flash, monitor
+### 4. Build the Project
 
 ```sh
 idf.py set-target esp32
 idf.py build
+```
+
+### 5. Burn / Flash the ESP32
+
+Connect the ESP32 by USB, then run:
+
+```sh
+idf.py flash
+```
+
+If needed, specify the serial port:
+
+```sh
+idf.py -p COM3 flash
+```
+
+or on macOS/Linux:
+
+```sh
+idf.py -p /dev/cu.usbserial-210 flash
+```
+
+### 6. Run and Monitor
+
+```sh
+idf.py monitor
+```
+
+Or flash and monitor in one command:
+
+```sh
 idf.py flash monitor
 ```
-
-If you see `ninja: error: loading 'build.ninja': No such file or directory`, the `build/` directory was not generated successfully. Clean the partial build output and let ESP-IDF configure again:
-
-```sh
-rm -rf build
-. /Users/daniellancorai/esp/v6.0.1/esp-idf/export.sh
-idf.py set-target esp32
-idf.py reconfigure
-idf.py build
-```
-
-In VS Code, the equivalent is `ESP-IDF: Full Clean Project`, then `ESP-IDF: Build Project`.
-
-If flashing fails with `Could not open /dev/ttyUSB1`, the selected serial port is wrong for macOS. List available ports:
-
-```sh
-ls /dev/cu.*
-```
-
-Use the USB serial device, for example:
-
-```sh
-idf.py -p /dev/cu.usbserial-210 flash monitor
-```
-
-If the port is busy, close any open serial monitor first, then retry.
-
-If Wi-Fi logs show `reason=201 (NO_AP_FOUND)`, the ESP32 cannot see any nearby access point with the configured SSID. Check:
-
-- SSID spelling and capitalization exactly match the phone/router network name.
-- iPhone hotspot is enabled with `Allow Others to Join`.
-- iPhone `Maximize Compatibility` is enabled so the hotspot uses 2.4 GHz.
-- Keep the iPhone hotspot settings screen open while the ESP32 connects.
-- ESP32 cannot connect to a 5 GHz-only network.
 
 Expected behavior:
 
-1. ESP32 starts hardware tasks for I2C sensor, button, audio, alarm, Wi-Fi, and network sync.
-2. ESP32 connects to the configured Wi-Fi.
-3. ESP32 polls `GET /api/alarm-settings` and syncs its clock from `server_epoch`.
-4. ESP32 uploads status to `POST /api/status`.
-5. The dashboard updates every 2 seconds.
+1. ESP32 boots and initializes hardware modules.
+2. ESP32 connects to Wi-Fi.
+3. ESP32 polls `GET /api/alarm-settings`.
+4. ESP32 synchronizes its local clock using `server_epoch`.
+5. ESP32 uploads live status with `POST /api/status`.
+6. The dashboard displays sensor data, alarm state, and connectivity information.
 
-## API endpoints
+## User Guide
 
-`GET /api/alarm-settings`
+### Starting the System
 
-Returns alarm settings for the device:
+1. Wire the ESP32, sensors, button, and DFPlayer Mini.
+2. Put alarm tracks on the DFPlayer Mini SD card.
+3. Start the local dashboard:
+
+   ```sh
+   python3 server/local_dashboard.py --host 0.0.0.0 --port 8000
+   ```
+
+4. Open `http://localhost:8000` in a browser.
+5. Configure the ESP32 with the correct Wi-Fi credentials and dashboard URL.
+6. Build, flash, and monitor the ESP32.
+
+### Creating and Editing Alarms
+
+In the dashboard:
+
+1. Open the `Alarms` section.
+2. Add one or more alarms.
+3. Configure:
+   - Alarm label.
+   - Alarm time.
+   - Enabled/disabled state.
+   - Snooze duration.
+   - Audio track number.
+   - Active days.
+4. Press `Save`.
+
+The ESP32 periodically downloads these settings from the dashboard.
+
+### Sleep Schedule Planner
+
+The dashboard includes a sleep schedule planner. It can be used to estimate useful
+bedtime or wake-up suggestions based on:
+
+- Age group.
+- Time needed to fall asleep.
+- Sleep cycle duration.
+- Preferred number of sleep cycles.
+- Wake-up or bedtime target.
+
+Suggested times can then be used when creating alarms.
+
+### Button Behavior
+
+The physical button is connected to GPIO 4 and uses active-low logic.
+
+| Action | Result |
+|---|---|
+| First press while alarm is ringing | Snooze the current alarm |
+| Second press within 2 seconds | Stop the alarm |
+
+This double-press design replaced an earlier long-press stop behavior because two
+quick presses were more reliable and easier to detect with software debouncing.
+
+### Audio Tracks
+
+The dashboard can preview files stored in:
+
+```text
+server/tracks/
+```
+
+For the physical DFPlayer Mini SD card, place files in the `MP3` folder using
+four-digit names:
+
+```text
+MP3/0001.mp3
+MP3/0002.mp3
+MP3/0003.mp3
+MP3/0004.mp3
+```
+
+The alarm track number selected in the dashboard corresponds to the DFPlayer track
+number.
+
+### Sensor Data
+
+The dashboard can display:
+
+- Temperature.
+- Humidity.
+- Air quality index.
+- eCO2 concentration.
+- TVOC concentration.
+- Last error message, if any.
+
+The AHT20 is required for temperature and humidity. The ENS160 air-quality sensor is
+optional; if it is missing or not ready, the firmware continues running and retries
+periodically.
+
+## REST API Reference
+
+The ESP32 communicates with the dashboard through local HTTP endpoints.
+
+| Endpoint | Method | Purpose |
+|---|---:|---|
+| `/api/alarm-settings` | `GET` | ESP32 downloads alarm settings and server time |
+| `/api/alarm-settings` | `POST` | Dashboard saves alarm settings |
+| `/api/status` | `POST` | ESP32 uploads live status |
+| `/api/status` | `GET` | Dashboard reads latest device status |
+| `/api/tracks` | `GET` | Dashboard lists available preview tracks |
+
+Example alarm settings response:
 
 ```json
 {
@@ -214,68 +469,137 @@ Returns alarm settings for the device:
       "days_mask": 127
     }
   ],
-  "sleep_profile": {
-    "age_group": "adult_18_60",
-    "time_to_fall_asleep": 15,
-    "cycle_minutes": 90,
-    "preferred_cycles": 5,
-    "schedule_mode": "wake_at",
-    "wake_time": "07:00",
-    "bed_time": "23:00",
-    "everyday": true
-  },
   "server_epoch": 1714470000,
   "server_iso": "2026-04-30 09:00:00 CEST"
 }
 ```
 
-`POST /api/alarm-settings`
+## Testing
 
-Saves alarm settings from the dashboard or curl:
+The project was tested through a combination of module-level checks and integration
+tests.
 
-```sh
-curl -X POST http://localhost:8000/api/alarm-settings \
-  -H 'Content-Type: application/json' \
-  -d '{"alarms":[{"id":"alarm-1","label":"Morning","enabled":true,"alarm_time":"07:30","snooze_minutes":5,"track":1,"days_mask":127}]}'
-```
+### Tested Areas
 
-`GET /api/tracks`
+- Wi-Fi connection and reconnection.
+- Dashboard alarm synchronization.
+- Status upload to the local server.
+- AHT20 temperature/humidity readings.
+- ENS160 air-quality readings and reprobe behavior.
+- Alarm scheduling and snooze behavior.
+- Multiple alarm handling.
+- Button responsiveness and debounce behavior.
+- DFPlayer Mini playback and stop commands.
 
-Returns the browser-previewable ringtone files found in `server/tracks`. Name files with the DFPlayer track number first, for example `001-morning.mp3`, `002-bells.mp3`, or `003-radio.wav`.
+### Problems Encountered and Solutions
 
-For the physical DFPlayer Mini SD card, put the alarm files in an `MP3` folder using four digit names:
+| Problem | Cause | Solution |
+|---|---|---|
+| Multiple alarms occasionally failed to sound | Overlapping alarm states could produce conflicting audio decisions | Cached audio state and selected the oldest active alarm as priority |
+| Alarm stop originally required a 2-second press | Long press timing was unreliable with debounce and real user behavior | Changed interaction to two quick presses within 2 seconds |
+| Button bouncing | Mechanical button transitions were noisy | Added 80 ms stable-state debounce and 20 ms polling |
+| Sensor timing errors | AHT20 requires conversion time before reading | Added measurement delay before reading sensor bytes |
+| ENS160 not always detected at boot | Optional sensor may be missing or not ready | Added periodic reprobe behavior |
+| Wi-Fi loss during runtime | Network may disconnect or hotspot may disappear | ESP-IDF event callbacks clear/set connection bits and reconnect |
+| Shared-state race conditions | Multiple tasks access alarm state | Protected shared alarm state with a FreeRTOS mutex |
 
-```text
-MP3/0001.mp3
-MP3/0002.mp3
-MP3/0003.mp3
-MP3/0004.mp3
-```
+## Troubleshooting
 
-The website preview files can have descriptive names, but the DFPlayer SD card should use the numbered `MP3/000N.mp3` names so track selection is deterministic.
+### ESP32 Cannot Connect to Wi-Fi
 
-`GET /api/status`
+Check:
 
-Returns the latest uploaded ESP32 status.
+- SSID spelling and capitalization.
+- Password correctness.
+- Network is 2.4 GHz compatible.
+- Mobile hotspot is visible and active.
+- ESP32 dashboard URL uses the computer LAN IP, not `localhost`.
 
-`POST /api/status`
+If logs show `NO_AP_FOUND`, the ESP32 cannot see the configured access point.
 
-Used by the ESP32 to upload live status, including temperature, humidity, ENS160 air quality data, alarm activity, and connectivity.
+### Dashboard Does Not Update
 
-## Hardware behavior
+Check:
 
-- DFPlayer Mini is controlled on UART1 with TX GPIO 17 and RX GPIO 16.
-- Each alarm plays its configured DFPlayer `MP3/000N.mp3` track number when ringing.
-- The button on GPIO 4 snoozes ringing alarms on one press and stops active/snoozed alarms on a second press within 2 seconds.
-- The AHT20 sensor is read on I2C SDA GPIO 21 and SCL GPIO 22.
-- The optional ENS160 air quality sensor is read on the same I2C bus at address `0x52` or `0x53`.
+- `server/local_dashboard.py` is still running.
+- Computer and ESP32 are on the same network.
+- Firewall allows connections to port `8000`.
+- ESP32 `APP_SERVER_URL` points to the computer LAN IP.
+- Serial monitor shows successful `POST /api/status`.
 
-## Local integration checklist
+### DFPlayer Does Not Play Audio
 
-1. Start `server/local_dashboard.py`.
-2. Save alarm settings in the dashboard.
-3. Confirm `curl http://localhost:8000/api/alarm-settings` returns the saved settings.
-4. Configure ESP32 server URL with your computer's LAN IP.
-5. Flash and monitor the ESP32.
-6. Confirm logs show Wi-Fi connected, settings polling, clock synchronization, and status uploads.
-7. Confirm the dashboard shows the ESP32 device id, status, temperature/humidity, air quality, and alarm state.
+Check:
+
+- SD card is inserted and formatted correctly.
+- Tracks are named as `MP3/0001.mp3`, `MP3/0002.mp3`, etc.
+- Speaker is connected correctly.
+- UART wiring is not swapped incorrectly.
+- Track number selected in the dashboard exists on the SD card.
+
+### Sensor Readings Are Missing
+
+Check:
+
+- SDA is connected to GPIO 21.
+- SCL is connected to GPIO 22.
+- Sensor power and ground are correct.
+- I2C address matches the sensor.
+- ENS160 is optional and may require time before valid readings are available.
+
+## Links
+
+- PowerPoint presentation: `[add presentation link here]`
+- YouTube demo video: `[add YouTube video link here]`
+
+Replace these placeholders with the final public or shared links before submission.
+
+## Team Members and Contributions
+
+| Team Member | Main Contribution | Details |
+|---|---|---|
+| Daniel | Audio Player implementation | Implemented DFPlayer Mini UART configuration, command packet creation, volume control, track playback, and stop command handling |
+| Filippo | WiFi Manager implementation | Implemented Wi-Fi station setup, ESP-IDF event callback handling, reconnect behavior, and connection-state synchronization |
+| Gaetano | User Button implementation | Implemented GPIO button setup, active-low polling, debounce logic, snooze action, and double-press stop behavior |
+| Chiara | I2C Sensor implementation | Implemented I2C initialization, AHT20 temperature/humidity acquisition, ENS160 air-quality acquisition, and sensor error handling |
+| Whole team | Remaining modules | Alarm manager, network integration, dashboard behavior, testing, debugging, and final integration were developed collaboratively |
+
+## Future Work
+
+### Hardware Improvements
+
+- Custom protective enclosure.
+- Better speaker system.
+- Improved power management.
+- More robust wiring or custom PCB.
+
+### Software Improvements
+
+- More distinctive alarm sounds.
+- Improved dashboard user interface.
+- More robust network recovery.
+- Event logging for alarms, sensor errors, and connectivity.
+- Better visualization of historical sensor data.
+
+### Additional Features
+
+- Upload custom alarm tracks from the website.
+- Remote notifications.
+- Cloud synchronization.
+- OTA firmware updates.
+- Multiple user profiles.
+- Alarm history.
+
+### Additional Sensors
+
+- Temperature sensor.
+- Humidity sensor.
+- Ambient light sensor.
+- Motion detector.
+- Air quality sensor.
+
+## Final Notes
+
+The project successfully demonstrates an integrated embedded system combining
+sensing, networking, user interaction, and audio feedback while providing a solid
+foundation for future extensions.
